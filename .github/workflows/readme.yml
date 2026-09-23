@@ -1,0 +1,17 @@
+name: Generate README
+
+on:
+  workflow_dispatch:
+  # The merge pushes main with the job token, which never fires a push trigger.
+  workflow_run:
+    workflows: [Merge]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  readme:
+    uses: intisy/workflows/.github/workflows/readme.yml@main
+    with:
+      repository: ${{ github.repository }}

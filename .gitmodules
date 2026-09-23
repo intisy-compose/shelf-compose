@@ -1,0 +1,5 @@
+# The public template is the default so a fresh clone runs; swap in your own with:
+#   .\docker-compose.ps1 data use <owner/repo[@ref]>
+[submodule "data"]
+	path = data
+	url = https://github.com/intisy-compose/shelf-data-template.git

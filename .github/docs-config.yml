@@ -1,0 +1,2 @@
+kind: generic
+description: "Self-hosted [shelf.nu](https://github.com/Shelf-nu/shelf.nu) asset management in Docker, with its own Supabase (Postgres, Auth, Storage), mail catcher and hourly backups instead of Supabase Cloud."

@@ -1,0 +1,20 @@
+name: Merge
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - development
+
+permissions:
+  contents: write
+
+jobs:
+  # No envPAT: sync_back pushes to development, and a PAT push would retrigger this workflow.
+  merge:
+    uses: intisy/workflows/.github/workflows/merge.yml@main
+    with:
+      source: development
+      target: main
+      sync_back: true
+      generated_paths: README.md

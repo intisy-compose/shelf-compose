@@ -1,0 +1,3 @@
+# LF everywhere so shell inlined in compose files survives a Windows clone; cmd needs CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
