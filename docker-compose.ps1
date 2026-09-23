@@ -70,19 +70,59 @@ function Initialize-Config {
     if ($generated.ContainsKey("JWT_SECRET") -or -not $config["ANON_KEY"]) { $generated["ANON_KEY"] = New-SupabaseKey "anon" $jwtSecret }
     if ($generated.ContainsKey("JWT_SECRET") -or -not $config["SERVICE_ROLE_KEY"]) { $generated["SERVICE_ROLE_KEY"] = New-SupabaseKey "service_role" $jwtSecret }
     if (-not $generated.Count) { Write-OK "config.env already has every secret; nothing changed."; return }
+    Set-ConfigValues $generated
+    Write-OK "Generated $(($generated.Keys | Sort-Object) -join ', ') in config.env."
+}
 
+function Set-ConfigValues([hashtable]$Values) {
     $lines = foreach ($line in Get-Content $configFile) {
-        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=' -and $generated.ContainsKey($Matches[1])) { "$($Matches[1])=$($generated[$Matches[1]])" }
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=' -and $Values.ContainsKey($Matches[1])) { "$($Matches[1])=$($Values[$Matches[1]])" }
         else { $line }
     }
     [System.IO.File]::WriteAllText($configFile, (($lines -join "`n") + "`n"))
-    Write-OK "Generated $(($generated.Keys | Sort-Object) -join ', ') in config.env."
+}
+
+function Get-TailnetStatus {
+    $raw = docker compose @composeArgs exec -T tailscale tailscale --socket=/var/run/tailscale/tailscaled.sock status --json 2>$null
+    if (-not $raw) { return $null }
+    try { return ($raw | Out-String | ConvertFrom-Json) } catch { return $null }
+}
+
+# The ts.net name is only known once the node has joined, and every other service is configured
+# from it, so the tailscale container starts first and the URLs are written before the rest.
+function Connect-Tailnet {
+    $config = Read-Config
+    $joined = Test-Path (Join-Path $PSScriptRoot "data\tailscale\tailscaled.state")
+    if (-not $config["TS_AUTHKEY"] -and -not $joined) {
+        Write-Err "TS_AUTHKEY is empty in config.env and this node has not joined the tailnet yet."
+        Write-Err "Create a key at https://login.tailscale.com/admin/settings/keys"
+        exit 1
+    }
+    Write-Step "Joining the tailnet..."
+    docker compose @composeArgs up -d tailscale
+    $deadline = (Get-Date).AddSeconds(90)
+    $tailnetHost = $null
+    while ((Get-Date) -lt $deadline) {
+        $status = Get-TailnetStatus
+        if ($status -and $status.BackendState -eq "Running" -and $status.Self.DNSName) { $tailnetHost = $status.Self.DNSName.TrimEnd('.'); break }
+        Start-Sleep -Seconds 2
+    }
+    if (-not $tailnetHost) {
+        Write-Err "The node did not join within 90s. An expired or used-up TS_AUTHKEY is the usual cause;"
+        Write-Err "check '.\docker-compose.ps1 logs tailscale'."
+        exit 1
+    }
+    Write-OK "Joined as $tailnetHost"
+    if ($config["SHELF_HOST"] -ne $tailnetHost) {
+        Set-ConfigValues @{ SHELF_HOST = $tailnetHost; SERVER_URL = "https://$tailnetHost"; SUPABASE_URL = "https://${tailnetHost}:8443" }
+        Write-OK "Wrote SHELF_HOST, SERVER_URL and SUPABASE_URL to config.env."
+    }
 }
 
 function Show-Urls {
     $config = Read-Config
     Write-Host ""
-    Write-Host "  shelf          : $($config['SERVER_URL'])"
+    Write-Host "  shelf          : $($config['SERVER_URL'])   (from any device on your tailnet)"
     Write-Host "  Supabase       : $($config['SUPABASE_URL'])"
     Write-Host "  Mail (Mailpit) : http://localhost:$(if ($config['MAILPIT_PORT']) { $config['MAILPIT_PORT'] } else { 8025 })"
 }
@@ -134,7 +174,8 @@ function Invoke-Data([object[]]$DataArguments) {
 
 $usage = @{
     "init-config" = "Create config.env and generate every missing secret and key"
-    "up"          = "Start the stack (default); migrations and buckets are applied first"
+    "up"          = "Join the tailnet, then start the stack (default); migrations and buckets run first"
+    "url"         = "Print the tailnet URLs"
     "down"        = "Stop and remove the containers (the database volume and data/ stay)"
     "restart"     = "Recreate the stack"
     "status"      = "Show the containers and their health"
@@ -147,9 +188,10 @@ Set-Location $PSScriptRoot
 
 switch ($Command.ToLower()) {
     "init-config" { Initialize-Config; break }
-    "up"      { Assert-Config; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Show-Urls }; break }
+    "up"      { Assert-Config; Connect-Tailnet; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Show-Urls }; break }
     "down"    { Write-Step "Stopping everything..."; docker compose @composeArgs down; break }
-    "restart" { Assert-Config; Write-Step "Recreating..."; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
+    "restart" { Assert-Config; Connect-Tailnet; Write-Step "Recreating..."; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
+    "url"     { Show-Urls; break }
     "status"  { docker compose @composeArgs ps -a; break }
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
     "restore" { Assert-Config; Invoke-Restore $forwarded; break }

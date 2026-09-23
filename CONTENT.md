@@ -1,17 +1,19 @@
 [shelf.nu](https://github.com/Shelf-nu/shelf.nu) needs Supabase for its database, logins and file
 uploads. Upstream's Docker image expects Supabase Cloud; this stack runs the parts shelf actually
-uses on your own machine instead, so nothing leaves it.
+uses on your own machine instead, so nothing leaves it, and serves it over
+[Tailscale](https://tailscale.com/) with real HTTPS to every device on your tailnet.
 
 ## Stack
 
 | service | image | role |
 | --- | --- | --- |
-| `shelf` | `ghcr.io/shelf-nu/shelf.nu:2.2.0` | the app, on `:3000` |
+| `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `shelf` and forwards `:443` and `:8443` |
+| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name, with certificates from Tailscale |
+| `shelf` | `ghcr.io/shelf-nu/shelf.nu:2.2.0` | the app, at `https://shelf.<tailnet>.ts.net` |
 | `db` | `supabase/postgres:17.6.1.136` | Postgres with Supabase's roles and schemas |
 | `auth` | `supabase/gotrue:v2.196.0` | Supabase Auth, set up for shelf's 6-digit email codes |
 | `storage` | `supabase/storage-api:v1.74.0` | file storage, kept in `data/storage` |
-| `gateway` | `nginx:1.29.8-alpine` | the one Supabase URL on `:8000`, plus the email templates |
-| `mail` | `axllent/mailpit:v1.31.2` | catches every email; read them at `:8025` |
+| `mail` | `axllent/mailpit:v1.31.2` | catches every email; read them at `http://localhost:8025` |
 | `migrate` | built from `shelf@2.2.0` | applies shelf's database migrations, then exits |
 | `init` | `curlimages/curl:8.16.0` | creates the four storage buckets shelf expects, then exits |
 | `db-backup` | `supabase/postgres:17.6.1.136` | hourly database dumps into `data/backups` |
@@ -20,19 +22,26 @@ Every image is pinned to a version, and the migrations come from the same releas
 
 ## Quick start
 
-Requires [Docker](https://docs.docker.com/get-docker/) and PowerShell (built into Windows; `pwsh`
-elsewhere).
+Requires [Docker](https://docs.docker.com/get-docker/), PowerShell (built into Windows; `pwsh`
+elsewhere) and a Tailscale account with
+[HTTPS certificates](https://tailscale.com/kb/1153/enabling-https) enabled.
 
 ```powershell
 git clone --recursive https://github.com/intisy-compose/shelf-compose
 cd shelf-compose
 
 .\docker-compose.ps1 init-config   # creates config.env and generates every secret and key
+# put an auth key from https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY in config.env
 .\docker-compose.ps1 up            # the one CLI; `.\docker-compose.ps1 help` lists every command
 ```
 
-Open http://localhost:3000 and sign up. The confirmation code arrives in Mailpit at
+`up` joins the tailnet first, reads the node's real `ts.net` name and writes `SERVER_URL` and
+`SUPABASE_URL` into `config.env` before starting the rest, then prints them. Open the shelf URL on
+any device in your tailnet and sign up. The confirmation code arrives in Mailpit at
 http://localhost:8025, because nothing is sent to real inboxes until you configure SMTP.
+
+The auth key is only used for the first join; the node identity is kept in `data/tailscale`
+afterwards, so an expired key does not matter once the node is in.
 
 ## Configuration
 
@@ -40,11 +49,12 @@ http://localhost:8025, because nothing is sent to real inboxes until you configu
 
 - **Real email:** set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM`. Port 465
   uses TLS, any other port plain SMTP. Both shelf and Supabase Auth send through it.
-- **Other machines:** replace `localhost` in `SERVER_URL` and `SUPABASE_URL` with this host's LAN
-  address or domain. The browser loads images and talks to Auth through `SUPABASE_URL`, so it has
-  to be reachable from wherever shelf is opened.
-- **Ports:** `SHELF_PORT`, `SUPABASE_PORT` and `MAILPIT_PORT`. Keep `SERVER_URL` and
-  `SUPABASE_URL` in step with them.
+- **Name:** `TS_HOSTNAME` (default `shelf`) is the node's name on the tailnet. shelf is served at
+  `https://<TS_HOSTNAME>.<tailnet>.ts.net` and Supabase on `:8443` of the same name; both are
+  tailnet-only, nothing is published to the internet.
+- **How the URL works everywhere:** shelf's server calls `SUPABASE_URL` just like the browser does.
+  shelf, Caddy and Tailscale share one network namespace, and inside it the `ts.net` name maps to
+  `127.0.0.1`, so the server reaches Caddy directly with the same valid certificate.
 - **Maps:** shelf requires `MAPTILER_TOKEN`; the placeholder keeps it running with maps blank. Set
   a [MapTiler](https://www.maptiler.com/) token to enable them.
 - **Sign-ups:** `DISABLE_SIGNUP=true` closes registration once your team has joined.
@@ -65,8 +75,8 @@ fails on file permissions. `db-backup` dumps it every hour into `data/backups` a
 
 `data/` is its own git repo (a submodule), defaulting to the public
 [`shelf-data-template`](https://github.com/intisy-compose/shelf-data-template). Point it at your
-own with `.\docker-compose.ps1 data use <owner/repo[@ref]>`. The dumps and uploaded files are
-gitignored there.
+own with `.\docker-compose.ps1 data use <owner/repo[@ref]>`. The dumps, uploaded files and the
+Tailscale node identity (a secret) are gitignored there.
 
 ## Upgrading shelf
 

@@ -1,31 +1,57 @@
-# shelf.nu asset management with a self-hosted Supabase (Postgres, Auth, Storage) behind one gateway.
-# Every image is pinned; start it through docker-compose.ps1, which passes --env-file config.env.
+# shelf.nu asset management with a self-hosted Supabase (Postgres, Auth, Storage), reachable over
+# Tailscale. Every image is pinned; start it through docker-compose.ps1, which passes
+# --env-file config.env and fills in the tailnet URLs once the node has joined.
 name: shelf
 
 services:
+  # Owns the network namespace that gateway and shelf share, and forwards tailnet :443 and :8443 to
+  # Caddy. The node key lives in data/tailscale; TS_AUTHKEY is only needed for the first join.
+  tailscale:
+    image: tailscale/tailscale:v1.102.4
+    container_name: shelf-tailscale
+    hostname: ${TS_HOSTNAME:-shelf}
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: ${TS_HOSTNAME:-shelf}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ./data/tailscale:/var/lib/tailscale
+      - ./gateway/serve.json:/config/serve.json:ro
+      - tailscale-socket:/var/run/tailscale
+    # shelf's server calls SUPABASE_URL too; inside this namespace the ts.net name has to reach Caddy
+    # directly, since userspace networking cannot dial the node's own tailnet address.
+    extra_hosts:
+      - "${SHELF_HOST:-shelf.invalid}:127.0.0.1"
+
   gateway:
-    image: nginx:1.29.8-alpine
+    image: caddy:2.11.4-alpine
     container_name: shelf-gateway
     restart: unless-stopped
-    ports:
-      - "${SHELF_PORT:-3000}:8080"
-      - "${SUPABASE_PORT:-8000}:8000"
+    network_mode: "service:tailscale"
+    environment:
+      SHELF_HOST: ${SHELF_HOST:-shelf.invalid}
     volumes:
-      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./gateway/templates:/usr/share/nginx/templates:ro
+      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./gateway/templates:/srv/templates:ro
+      - tailscale-socket:/var/run/tailscale
+      - shelf-caddy-data:/data
     depends_on:
+      tailscale:
+        condition: service_started
       auth:
         condition: service_healthy
       storage:
         condition: service_healthy
 
-  # Shares the gateway's network namespace, so SUPABASE_URL=http://localhost:8000 resolves to the
-  # gateway both in the browser and inside this container.
   shelf:
     image: ghcr.io/shelf-nu/shelf.nu:2.2.0
     container_name: shelf
     restart: unless-stopped
-    network_mode: "service:gateway"
+    network_mode: "service:tailscale"
     depends_on:
       gateway:
         condition: service_started
@@ -114,9 +140,9 @@ services:
       # shelf only accepts 6-digit codes; GoTrue's default is 8.
       GOTRUE_MAILER_OTP_LENGTH: 6
       GOTRUE_MAILER_OTP_EXP: 3600
-      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://gateway:8000/templates/confirmation.html
-      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://gateway:8000/templates/magic_link.html
-      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://gateway:8000/templates/recovery.html
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://tailscale:8000/templates/confirmation.html
+      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://tailscale:8000/templates/magic_link.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://tailscale:8000/templates/recovery.html
       GOTRUE_MAILER_SUBJECTS_CONFIRMATION: Your shelf confirmation code
       GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: Your shelf login code
       GOTRUE_MAILER_SUBJECTS_RECOVERY: Your shelf password reset code
@@ -162,7 +188,7 @@ services:
     container_name: shelf-mail
     restart: unless-stopped
     ports:
-      - "${MAILPIT_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
 
   migrate:
     build:
@@ -238,3 +264,5 @@ services:
 volumes:
   shelf-db:
   shelf-db-config:
+  shelf-caddy-data:
+  tailscale-socket:
