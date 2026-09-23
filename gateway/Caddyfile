@@ -1,0 +1,33 @@
+# Runs inside the tailscale container's network namespace. Certificates for the ts.net name come
+# from tailscaled over its socket, so shelf and the browser both get real, auto-renewed HTTPS.
+{
+	admin off
+	auto_https disable_redirects
+}
+
+{$SHELF_HOST}:443 {
+	reverse_proxy 127.0.0.1:8080
+}
+
+# The Supabase URL: Auth and Storage under their usual paths.
+{$SHELF_HOST}:8443 {
+	request_body {
+		max_size 50MB
+	}
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+	handle_path /storage/v1/* {
+		reverse_proxy storage:5000 {
+			header_up X-Forwarded-Prefix /storage/v1
+		}
+	}
+}
+
+# Plain HTTP on the Docker network only: the OTP email templates GoTrue fetches.
+http://:8000 {
+	handle_path /templates/* {
+		root * /srv/templates
+		file_server
+	}
+}
