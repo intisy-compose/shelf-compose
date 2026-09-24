@@ -187,6 +187,7 @@ $usage = @{
     "url"         = "Print the tailnet URLs"
     "down"        = "Stop and remove the containers (the database volume and data/ stay)"
     "restart"     = "Recreate the stack"
+    "rebuild"     = "Rebuild the built images (shelf, migrate) and recreate the stack"
     "status"      = "Show the containers and their health"
     "logs"        = "[service]  follow logs, e.g. logs shelf"
     "backup"      = "Dump the database to data\backups now"
@@ -202,6 +203,7 @@ switch ($Command.ToLower()) {
     "up"      { Assert-Config; Connect-Tailnet; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Show-Urls }; break }
     "down"    { Write-Step "Stopping everything..."; docker compose @composeArgs down; break }
     "restart" { Assert-Config; Connect-Tailnet; Write-Step "Recreating..."; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
+    "rebuild" { Assert-Config; Connect-Tailnet; Write-Step "Rebuilding..."; docker compose @composeArgs build; if ($LASTEXITCODE -ne 0) { exit 1 }; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
     "url"     { Show-Urls; break }
     "status"  { docker compose @composeArgs ps -a; break }
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }

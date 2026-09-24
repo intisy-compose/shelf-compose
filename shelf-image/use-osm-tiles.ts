@@ -1,5 +1,5 @@
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 const maptilerTemplate =
   /"https:\/\/api\.maptiler\.com\/maps\/"\+(\w+)\+"\/256\/"\+(\w+)\+"\/"\+(\w+)\+"\/"\+(\w+)\+\((\w+)>=2\?"@2x":""\)\+"\.png\?key="\+(\w+)/g;
@@ -12,24 +12,60 @@ function* javascriptFiles(directory: string): Generator<string> {
   }
 }
 
-let replaced = 0;
-const clientBuild = process.argv[2];
-if (!clientBuild) {
-  console.error("usage: use-osm-tiles.ts <client build directory>");
+function fail(message: string): never {
+  console.error(message);
   process.exit(1);
 }
 
-for (const path of javascriptFiles(clientBuild)) {
+const buildRoot = process.argv[2] ?? fail("usage: use-osm-tiles.ts <webapp build directory>");
+const clientFiles = [...javascriptFiles(join(buildRoot, "client"))];
+const allFiles = [...clientFiles, ...javascriptFiles(join(buildRoot, "server"))];
+
+let replaced = 0;
+const patched: string[] = [];
+for (const path of clientFiles) {
   const source = readFileSync(path, "utf8");
-  const patched = source.replace(maptilerTemplate, (_match: string, _style: string, zoom: string, x: string, y: string) => {
+  const updated = source.replace(maptilerTemplate, (_match: string, _style: string, zoom: string, x: string, y: string) => {
     replaced += 1;
     return `"/osm-tiles/"+${zoom}+"/"+${x}+"/"+${y}+".png"`;
   });
-  if (patched !== source) writeFileSync(path, patched);
+  if (updated !== source) {
+    writeFileSync(path, updated);
+    patched.push(path);
+  }
+}
+if (replaced !== 1) fail(`expected exactly one MapTiler tile template, replaced ${replaced}`);
+
+/**
+ * @implNote Client assets are served with a one-year max-age under content-hashed names, so a
+ * browser that loaded the MapTiler version keeps it until the name changes. Every file that leads
+ * to the patched one (its importers, their importers, up to the manifest the uncached HTML links)
+ * is renamed, and every reference in the client and server builds follows.
+ */
+function renameImportChain(start: string[]): number {
+  const chain = new Set(start);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    const names = [...chain].map((path) => basename(path));
+    for (const path of clientFiles) {
+      if (chain.has(path)) continue;
+      const source = readFileSync(path, "utf8");
+      if (names.some((name) => source.includes(name))) {
+        chain.add(path);
+        grew = true;
+      }
+    }
+  }
+  const renames = [...chain].map((path) => [basename(path), basename(path).replace(/\.js$/, "-osm.js")] as const);
+  for (const path of allFiles) {
+    const source = readFileSync(path, "utf8");
+    const updated = renames.reduce((text, [from, to]) => text.split(from).join(to), source);
+    if (updated !== source) writeFileSync(path, updated);
+  }
+  for (const path of chain) renameSync(path, path.replace(/\.js$/, "-osm.js"));
+  return chain.size;
 }
 
-if (replaced !== 1) {
-  console.error(`expected exactly one MapTiler tile template, replaced ${replaced}`);
-  process.exit(1);
-}
-console.log("map tiles now load from /osm-tiles/");
+const renamed = renameImportChain(patched);
+console.log(`map tiles now load from /osm-tiles/; renamed ${renamed} cached client files`);
