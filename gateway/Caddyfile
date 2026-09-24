@@ -6,7 +6,19 @@
 }
 
 {$SHELF_HOST}:443 {
-	reverse_proxy 127.0.0.1:8080
+	# Map tiles from OpenStreetMap, which needs no key; the shelf image points its map here.
+	# OSM's tile policy asks for an identifying User-Agent and honoured caching.
+	handle_path /osm-tiles/* {
+		reverse_proxy https://tile.openstreetmap.org {
+			header_up Host tile.openstreetmap.org
+			header_up User-Agent "shelf-compose (self-hosted shelf.nu; https://github.com/intisy-compose/shelf-compose)"
+			header_up -Cookie
+			header_up -Authorization
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
 }
 
 # The Supabase URL: Auth and Storage under their usual paths.
