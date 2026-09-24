@@ -145,6 +145,15 @@ function Invoke-Restore([object[]]$RestoreArguments) {
     Write-OK "Restored $file."
 }
 
+function Invoke-Backup {
+    $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
+    $file = "shelf-$stamp.dump"
+    Write-Step "Dumping the database to data\backups\$file..."
+    docker compose @composeArgs exec -T db-backup sh -c "pg_dump -h db -U supabase_admin -d postgres -Fc -f /backups/$file.tmp && mv /backups/$file.tmp /backups/$file"
+    if ($LASTEXITCODE -ne 0) { Write-Err "Backup failed."; exit 1 }
+    Write-OK "Backed up to data\backups\$file."
+}
+
 function Invoke-Data([object[]]$DataArguments) {
     $subcommand = if ($DataArguments) { "$($DataArguments[0])".ToLower() } else { "status" }
     switch ($subcommand) {
@@ -180,8 +189,10 @@ $usage = @{
     "restart"     = "Recreate the stack"
     "status"      = "Show the containers and their health"
     "logs"        = "[service]  follow logs, e.g. logs shelf"
+    "backup"      = "Dump the database to data\backups now"
     "restore"     = "[file]  restore the database from data\backups (newest by default)"
     "data"        = "status | use [owner/repo[@ref]]  point data/ at a data repo (none = template)"
+    "catalog"     = "check | sync [--prune] | add <file> | update <file> | list  (see CATALOG.md in data/)"
 }
 
 Set-Location $PSScriptRoot
@@ -194,7 +205,9 @@ switch ($Command.ToLower()) {
     "url"     { Show-Urls; break }
     "status"  { docker compose @composeArgs ps -a; break }
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
+    "backup"  { Assert-Config; Invoke-Backup; break }
     "restore" { Assert-Config; Invoke-Restore $forwarded; break }
     "data"    { Invoke-Data $forwarded; break }
+    "catalog" { Assert-Config; & python (Join-Path $PSScriptRoot "scripts\catalog.py") @forwarded; exit $LASTEXITCODE }
     default   { Show-Usage -Commands $usage; exit 1 }
 }
