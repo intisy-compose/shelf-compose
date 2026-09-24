@@ -197,6 +197,11 @@ def index_column_sql(field_name, field_type, active, old_name=None):
 
 def sync(taxonomy, ws, prune):
     state = db_state()
+    renames = likely_renames(taxonomy, state)
+    if renames:
+        kind, declared, actual = renames[0]
+        raise CatalogError(f"{SINGULAR[kind]} '{declared}' looks renamed to '{actual}' in shelf; syncing now would create a "
+                           f"duplicate. Rename it in data/catalog.toml (or back in shelf) first")
     sql, report = [], []
     org, user = literal(ws["org"]), literal(ws["user"])
 
@@ -310,8 +315,21 @@ def parents_first(locations):
     return ordered
 
 
+def likely_renames(taxonomy, state):
+    """A single declared-but-missing entry next to a single undeclared one is a rename made in the UI."""
+    renames = []
+    for kind in ("categories", "fields", "tags", "locations", "models"):
+        missing = [entry["name"] for key, entry in taxonomy[kind].items() if key not in state[kind]]
+        undeclared = [row["name"] for key, row in state[kind].items() if key not in taxonomy[kind]]
+        if len(missing) == 1 and len(undeclared) == 1:
+            renames.append((kind, missing[0], undeclared[0]))
+    return renames
+
+
 def check(taxonomy):
     state, problems = db_state(), []
+    for kind, declared, actual in likely_renames(taxonomy, state):
+        problems.append(f"{SINGULAR[kind]} '{declared}' looks renamed to '{actual}' in shelf; rename it in data/catalog.toml")
     for kind in ("categories", "fields", "tags", "locations", "models"):
         for key, row in state[kind].items():
             if key not in taxonomy[kind]:

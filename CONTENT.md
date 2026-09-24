@@ -9,7 +9,7 @@ uses on your own machine instead, so nothing leaves it, and serves it over
 | --- | --- | --- |
 | `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `shelf` and forwards `:443` and `:8443` |
 | `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name, with certificates from Tailscale |
-| `shelf` | `ghcr.io/shelf-nu/shelf.nu:2.2.0` | the app, at `https://shelf.<tailnet>.ts.net` |
+| `shelf` | built from `ghcr.io/shelf-nu/shelf.nu:2.2.0` | the app, at `https://shelf.<tailnet>.ts.net`, with OpenStreetMap maps |
 | `db` | `supabase/postgres:17.6.1.136` | Postgres with Supabase's roles and schemas |
 | `auth` | `supabase/gotrue:v2.196.0` | Supabase Auth, set up for shelf's 6-digit email codes |
 | `storage` | `supabase/storage-api:v1.74.0` | file storage, kept in `data/storage` |
@@ -55,8 +55,15 @@ afterwards, so an expired key does not matter once the node is in.
 - **How the URL works everywhere:** shelf's server calls `SUPABASE_URL` just like the browser does.
   shelf, Caddy and Tailscale share one network namespace, and inside it the `ts.net` name maps to
   `127.0.0.1`, so the server reaches Caddy directly with the same valid certificate.
-- **Maps:** shelf requires `MAPTILER_TOKEN`; the placeholder keeps it running with maps blank. Set
-  a [MapTiler](https://www.maptiler.com/) token to enable them.
+- **Maps:** location maps use [OpenStreetMap](https://www.openstreetmap.org/) and need no key.
+  Upstream shelf compiles MapTiler (which does need a key) into its browser code, so `shelf-image/`
+  builds shelf with that one tile URL pointed at `/osm-tiles/`, which Caddy proxies to OSM's tile
+  servers with an identifying User-Agent and OSM's own caching headers. The build fails if it
+  cannot find exactly one MapTiler tile template, so an upgrade that changes the code is caught
+  instead of leaving maps blank. `MAPTILER_TOKEN` is still required by shelf at startup but no
+  longer used. OSM's public tiles suit light use like a personal inventory; heavy traffic calls
+  for a paid provider or your own tile server. Addresses are geocoded through OSM's Nominatim,
+  identified by `GEOCODING_USER_AGENT`.
 - **Sign-ups:** `DISABLE_SIGNUP=true` closes registration once your team has joined.
 
 `ANON_KEY` and `SERVICE_ROLE_KEY` are signed with `JWT_SECRET`. `init-config` only fills values that
@@ -104,8 +111,9 @@ Tailscale node identity (a secret) are gitignored there.
 
 ## Upgrading shelf
 
-Change the `shelf` image tag and the `migrate` build's `shelf@<version>` tag in
-`docker-compose.yml` together, then run `.\docker-compose.ps1 up`. The new migrations are applied
+Change the `FROM` tag in `shelf-image/Dockerfile` and the `migrate` build's `shelf@<version>` tag
+in `docker-compose.yml` together (and the `shelf-osm:<version>` image name), then run
+`.\docker-compose.ps1 up`. If the map patch no longer matches, the build stops and says so. The new migrations are applied
 before shelf starts. Take a dump first; `restore` is the way back.
 
 ## Credits

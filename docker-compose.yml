@@ -48,7 +48,9 @@ services:
         condition: service_healthy
 
   shelf:
-    image: ghcr.io/shelf-nu/shelf.nu:2.2.0
+    build:
+      context: ./shelf-image
+    image: shelf-osm:2.2.0
     container_name: shelf
     restart: unless-stopped
     network_mode: "service:tailscale"
