@@ -62,13 +62,37 @@ afterwards, so an expired key does not matter once the node is in.
 `ANON_KEY` and `SERVICE_ROLE_KEY` are signed with `JWT_SECRET`. `init-config` only fills values that
 are empty, so to rotate them, blank all three and run it again.
 
+## Catalog
+
+shelf lets anyone invent a category or tag on the spot, which is how inventories drift into
+"Electronics" and half a dozen spellings of the same thing. The catalog tool keeps the structure
+declared in one file instead:
+
+- `data/catalog.toml` declares every category, custom field (with its type, options and the
+  categories it applies to), tag, location and asset model the inventory may use.
+- `.\docker-compose.ps1 catalog sync` makes shelf match it; `--prune` also removes undeclared ones
+  that nothing uses.
+- `.\docker-compose.ps1 catalog check` reports drift, for example after someone added a tag in the
+  UI, and required fields left empty.
+- `.\docker-compose.ps1 catalog add <batch.toml>` and `update <batch.toml>` create or change assets
+  from a batch file. The whole batch is validated against the taxonomy before anything is written,
+  so an undeclared category, tag, field or option is refused.
+- `.\docker-compose.ps1 catalog list` prints every asset with its fields.
+
+Assets written this way get what shelf's own "create asset" gives them: a sequential ID, a QR code,
+their location, field values, an activity note, and optionally a photo with its thumbnail. The
+tool mirrors shelf 2.2.0's services, so re-check it against shelf before moving to a newer version.
+It needs Python 3.11 or newer on the host, plus [Pillow](https://pypi.org/project/pillow/) for
+photos. The public data template ships a starter `catalog.toml` that shows the format.
+
 ## Data and backups
 
 The database lives in the Docker volume `shelf_shelf-db`, because Postgres on a Windows bind mount
 fails on file permissions. `db-backup` dumps it every hour into `data/backups` and keeps the newest
-`BACKUP_KEEP` (48 by default). Restore with:
+`BACKUP_KEEP` (48 by default). Take one on demand before a risky change, and restore with:
 
 ```powershell
+.\docker-compose.ps1 backup                           # dump now
 .\docker-compose.ps1 restore                          # the newest dump
 .\docker-compose.ps1 restore shelf-20260923-091920.dump
 ```
