@@ -60,7 +60,11 @@ afterwards, so an expired key does not matter once the node is in.
   builds shelf with that one tile URL pointed at `/osm-tiles/`, which Caddy proxies to OSM's tile
   servers with an identifying User-Agent and OSM's own caching headers. The build fails if it
   cannot find exactly one MapTiler tile template, so an upgrade that changes the code is caught
-  instead of leaving maps blank. `MAPTILER_TOKEN` is still required by shelf at startup but no
+  instead of leaving maps blank. Because browsers cache shelf's scripts for a year under their
+  names, the patch also renames the patched file and everything that imports it, so a browser that
+  loaded the MapTiler version picks up the new one on its next visit. After editing
+  `shelf-image/`, run `.\docker-compose.ps1 rebuild`; `up` only builds images that are missing.
+  `MAPTILER_TOKEN` is still required by shelf at startup but no
   longer used. OSM's public tiles suit light use like a personal inventory; heavy traffic calls
   for a paid provider or your own tile server. Addresses are geocoded through OSM's Nominatim,
   identified by `GEOCODING_USER_AGENT`.
