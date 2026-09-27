@@ -193,7 +193,7 @@ $usage = @{
     "backup"      = "Dump the database to data\backups now"
     "restore"     = "[file]  restore the database from data\backups (newest by default)"
     "data"        = "status | use [owner/repo[@ref]]  point data/ at a data repo (none = template)"
-    "catalog"     = "check | sync [--prune] | add <file> | update <file> | list  (see CATALOG.md in data/)"
+    "catalog"     = "check | sync [--prune] | add <file> | update <file> | list | images | cutout <photo> <png>  (see CATALOG.md in data/)"
 }
 
 Set-Location $PSScriptRoot
