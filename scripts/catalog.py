@@ -25,11 +25,16 @@ import tomllib
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG_PATH = os.path.join(ROOT, "data", "catalog.toml")
+DATA_DIR = os.path.join(ROOT, "data")
+CATALOG_PATH = os.path.join(DATA_DIR, "catalog.toml")
 CONFIG_PATH = os.path.join(ROOT, "config.env")
 FIELD_TYPES = {"TEXT", "NUMBER", "AMOUNT", "OPTION", "BOOLEAN", "DATE", "MULTILINE_TEXT"}
 ASSET_KEYS = {"id", "title", "description", "category", "model", "location", "tags", "fields", "value", "image"}
 THUMBNAIL_SIZE = 108
+PRODUCT_IMAGE_SIZE = 1200
+PRODUCT_IMAGE_MARGIN = 0.06
+CUTOUT_IMAGE = "danielgatis/rembg"
+CUTOUT_MODEL = "birefnet-general"
 SINGULAR = {"categories": "category", "fields": "field", "tags": "tag", "locations": "location", "models": "model"}
 
 
@@ -114,7 +119,13 @@ def load_catalog():
             require(taxonomy, "locations", location["parent"], f"location '{location['name']}'")
     for model in taxonomy["models"].values():
         require(taxonomy, "categories", model["category"], f"model '{model['name']}'")
+        if model.get("image") and not os.path.isfile(model_image_path(model)):
+            raise CatalogError(f"model '{model['name']}': image data/{model['image']} not found")
     return taxonomy
+
+
+def model_image_path(model):
+    return os.path.join(DATA_DIR, model["image"]) if model.get("image") else None
 
 
 def require(taxonomy, kind, name, context):
@@ -349,20 +360,42 @@ def check(taxonomy):
     return problems
 
 
+def product_image(path):
+    """Frames every product shot the same way: flattened on white, trimmed, centred in a square."""
+    from PIL import Image, ImageChops, ImageOps
+
+    with Image.open(path) as original:
+        image = ImageOps.exif_transpose(original).convert("RGBA")
+    flattened = Image.new("RGB", image.size, "white")
+    flattened.paste(image, mask=image.getchannel("A"))
+    difference = ImageChops.difference(flattened, Image.new("RGB", image.size, "white")).convert("L")
+    content = difference.point(lambda level: 255 if level > 12 else 0).getbbox()
+    if content:
+        flattened = flattened.crop(content)
+    side = int(max(flattened.size) * (1 + 2 * PRODUCT_IMAGE_MARGIN))
+    square = Image.new("RGB", (side, side), "white")
+    square.paste(flattened, ((side - flattened.width) // 2, (side - flattened.height) // 2))
+    return square.resize((PRODUCT_IMAGE_SIZE, PRODUCT_IMAGE_SIZE), Image.LANCZOS) if side > PRODUCT_IMAGE_SIZE else square
+
+
 def upload_image(path, user_id, asset_id, config):
     """Stores a photo the way shelf does: main image plus a 108px thumbnail, both behind signed URLs."""
-    from PIL import Image, ImageOps
+    from PIL import ImageOps
 
     stamp = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     base = f"{user_id}/{asset_id}/main-image-{stamp}"
-    with Image.open(path) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        main, thumb = io.BytesIO(), io.BytesIO()
-        image.save(main, "JPEG", quality=90)
-        ImageOps.fit(image, (THUMBNAIL_SIZE, THUMBNAIL_SIZE)).save(thumb, "JPEG", quality=85)
+    image = product_image(path)
+    main, thumb = io.BytesIO(), io.BytesIO()
+    image.save(main, "JPEG", quality=90)
+    ImageOps.fit(image, (THUMBNAIL_SIZE, THUMBNAIL_SIZE)).save(thumb, "JPEG", quality=85)
     urls = [storage_upload_and_sign(f"{base}.jpg", main.getvalue(), config),
             storage_upload_and_sign(f"{base}-thumbnail.jpg", thumb.getvalue(), config)]
     return urls[0], urls[1]
+
+
+def image_columns_sql(main_image, thumb):
+    return (f'"mainImage" = {literal(main_image)}, "thumbnailImage" = {literal(thumb)}, '
+            f'"mainImageExpiration" = now() + interval \'1 day\'')
 
 
 def storage_upload_and_sign(object_path, data, config):
@@ -461,8 +494,9 @@ def add_assets(batch, taxonomy, ws, config):
         asset_id = literal(asset_uuid)
         model = state["models"][asset["model"].lower()] if asset.get("model") else None
         main_image = thumb = expiry = None
-        if asset.get("image"):
-            main_image, thumb = upload_image(asset["image"], ws["user"], asset_uuid, config)
+        image_path = asset.get("image") or model_image_path(taxonomy["models"][asset["model"].lower()])
+        if image_path:
+            main_image, thumb = upload_image(image_path, ws["user"], asset_uuid, config)
             expiry = "now() + interval '1 day'"
         sql = [f"select get_next_sequential_id({literal(ws['org'])}) as id \\gset\n",
                f'insert into "Asset" (id, title, description, "sequentialId", "userId", "organizationId", "categoryId", "assetModelId", '
@@ -509,8 +543,7 @@ def update_assets(batch, taxonomy, ws, config):
             changed.append("model")
         if asset.get("image"):
             main_image, thumb = upload_image(asset["image"], ws["user"], asset_uuid, config)
-            columns.append(f'"mainImage" = {literal(main_image)}, "thumbnailImage" = {literal(thumb)}, '
-                           f'"mainImageExpiration" = now() + interval \'1 day\'')
+            columns.append(image_columns_sql(main_image, thumb))
             changed.append("image")
         changed += [k for k in ("location", "tags") if k in asset]
         changed += [f"field {name}" for name in asset.get("fields", {})]
@@ -527,6 +560,65 @@ def update_assets(batch, taxonomy, ws, config):
     return updated
 
 
+def apply_model_images(taxonomy, ws, config):
+    """Gives every asset its model's product shot, replacing whatever image it had."""
+    rows = query('select a.id, a."sequentialId" as sid, a.title, m.name as model from "Asset" a '
+                 'join "AssetModel" m on m.id = a."assetModelId" order by a."sequentialId"')
+    applied, without_image = [], set()
+    for row in rows:
+        model = taxonomy["models"].get(row["model"].lower())
+        if not model or not model.get("image"):
+            without_image.add(row["model"])
+            continue
+        main_image, thumb = upload_image(model_image_path(model), ws["user"], row["id"], config)
+        run_sql(f'update "Asset" set {image_columns_sql(main_image, thumb)}, "updatedAt" = now() where id = {literal(row["id"])};\n'
+                f'insert into "Note" (id, content, type, "userId", "assetId", "updatedAt") values ({literal(new_id())}, '
+                f'{literal(user_link(ws) + " set the model product image through the catalog.")}, \'UPDATE\', '
+                f'{literal(ws["user"])}, {literal(row["id"])}, now());\n')
+        applied.append(f"~ {row['sid']} {row['title']}: image from data/{model['image']}")
+    return applied + [f"! model without image: {name}" for name in sorted(without_image)] or ["no assets have a model"]
+
+
+def cutout(photo, output):
+    """Cuts the item out of a phone photo with rembg in Docker, turns it straight and saves a transparent PNG."""
+    import tempfile
+    from PIL import Image, ImageOps
+
+    if not os.path.isfile(photo):
+        raise CatalogError(f"{photo} not found")
+    with tempfile.TemporaryDirectory() as work:
+        with Image.open(photo) as original:
+            ImageOps.exif_transpose(original).convert("RGB").save(os.path.join(work, "in.png"))
+        command = ["docker", "run", "--rm", "-e", "U2NET_HOME=/models", "-v", "shelf-rembg-models:/models",
+                   "-v", f"{work}:/work", CUTOUT_IMAGE, "i", "-m", CUTOUT_MODEL, "/work/in.png", "/work/out.png"]
+        result = subprocess.run(command, capture_output=True)
+        if result.returncode != 0:
+            raise CatalogError("rembg failed: " + result.stderr.decode("utf-8", "replace").strip()[-800:])
+        with Image.open(os.path.join(work, "out.png")) as cut:
+            straight = straighten(cut.convert("RGBA"))
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    straight.save(output)
+    return [f"+ {output} ({straight.width}x{straight.height})"]
+
+
+def straighten(image):
+    """Rotates a cut-out to the angle with the tightest bounding box, long side horizontal, and crops to it."""
+    from PIL import Image
+
+    preview = image.getchannel("A").point(lambda level: 255 if level > 128 else 0)
+    preview.thumbnail((400, 400))
+
+    def box_area(angle):
+        box = preview.rotate(angle, expand=True).getbbox()
+        return (box[2] - box[0]) * (box[3] - box[1]) if box else float("inf")
+
+    coarse = min(range(-45, 46, 3), key=box_area)
+    best = min((coarse + step / 4 for step in range(-12, 13)), key=box_area)
+    rotated = image.rotate(best, expand=True, resample=Image.BICUBIC)
+    rotated = rotated.crop(rotated.getchannel("A").point(lambda level: 255 if level > 128 else 0).getbbox())
+    return rotated.rotate(90, expand=True) if rotated.height > rotated.width else rotated
+
+
 def list_assets():
     rows = query('select a."sequentialId" as id, a.title, c.name as category, m.name as model, l.name as location, a.value, '
                  'coalesce((select string_agg(t.name, \', \' order by t.name) from "_AssetToTag" x join "Tag" t on t.id = x."B" where x."A" = a.id), \'\') as tags, '
@@ -540,13 +632,18 @@ def list_assets():
 
 def main():
     parser = argparse.ArgumentParser(prog="docker-compose.ps1 catalog")
-    parser.add_argument("command", choices=["check", "sync", "add", "update", "list"])
-    parser.add_argument("file", nargs="?", help="batch file for add / update")
+    parser.add_argument("command", choices=["check", "sync", "add", "update", "list", "images", "cutout"])
+    parser.add_argument("file", nargs="?", help="batch file for add / update, photo for cutout")
+    parser.add_argument("output", nargs="?", help="cutout: the transparent PNG to write, e.g. data/images/<model>.png")
     parser.add_argument("--prune", action="store_true", help="sync: also delete undeclared, unused taxonomy")
     arguments = parser.parse_args()
     try:
         if arguments.command == "list":
             lines = list_assets()
+        elif arguments.command == "cutout":
+            if not arguments.file or not arguments.output:
+                raise CatalogError("cutout needs a photo and an output path")
+            lines = cutout(arguments.file, arguments.output)
         else:
             taxonomy = load_catalog()
             if arguments.command == "check":
@@ -556,6 +653,8 @@ def main():
             ws = workspace()
             if arguments.command == "sync":
                 lines = sync(taxonomy, ws, arguments.prune)
+            elif arguments.command == "images":
+                lines = apply_model_images(taxonomy, ws, read_config())
             else:
                 if not arguments.file:
                     raise CatalogError(f"{arguments.command} needs a batch file")
