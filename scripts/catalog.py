@@ -368,6 +368,7 @@ def product_image(path):
         image = ImageOps.exif_transpose(original).convert("RGBA")
     flattened = Image.new("RGB", image.size, "white")
     flattened.paste(image, mask=image.getchannel("A"))
+    whiten_background(flattened)
     difference = ImageChops.difference(flattened, Image.new("RGB", image.size, "white")).convert("L")
     content = difference.point(lambda level: 255 if level > 12 else 0).getbbox()
     if content:
@@ -376,6 +377,15 @@ def product_image(path):
     square = Image.new("RGB", (side, side), "white")
     square.paste(flattened, ((side - flattened.width) // 2, (side - flattened.height) // 2))
     return square.resize((PRODUCT_IMAGE_SIZE, PRODUCT_IMAGE_SIZE), Image.LANCZOS) if side > PRODUCT_IMAGE_SIZE else square
+
+
+def whiten_background(image):
+    """Turns an off-white studio background pure white, filling from the corners so a white product stays intact."""
+    from PIL import ImageDraw
+
+    for corner in ((0, 0), (image.width - 1, 0), (0, image.height - 1), (image.width - 1, image.height - 1)):
+        if min(image.getpixel(corner)) >= 225:
+            ImageDraw.floodfill(image, corner, (255, 255, 255), thresh=16)
 
 
 def upload_image(path, user_id, asset_id, config):
