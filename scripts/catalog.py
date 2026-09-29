@@ -35,6 +35,7 @@ PRODUCT_IMAGE_SIZE = 1200
 PRODUCT_IMAGE_MARGIN = 0.06
 CUTOUT_IMAGE = "danielgatis/rembg"
 CUTOUT_MODEL = "birefnet-general"
+RENAMEABLE = ("categories", "tags", "locations", "models")
 SINGULAR = {"categories": "category", "fields": "field", "tags": "tag", "locations": "location", "models": "model"}
 
 
@@ -208,12 +209,13 @@ def index_column_sql(field_name, field_type, active, old_name=None):
 
 def sync(taxonomy, ws, prune):
     state = db_state()
+    report = [f"~ {SINGULAR[kind]} {old} renamed to {new}" for kind, old, new in adopt_declared_renames(taxonomy, state)]
     renames = likely_renames(taxonomy, state)
     if renames:
         kind, declared, actual = renames[0]
         raise CatalogError(f"{SINGULAR[kind]} '{declared}' looks renamed to '{actual}' in shelf; syncing now would create a "
                            f"duplicate. Rename it in data/catalog.toml (or back in shelf) first")
-    sql, report = [], []
+    sql = []
     org, user = literal(ws["org"]), literal(ws["user"])
 
     for key, category in taxonomy["categories"].items():
@@ -326,6 +328,21 @@ def parents_first(locations):
     return ordered
 
 
+def adopt_declared_renames(taxonomy, state):
+    """Re-keys a row under the name that declares `renamed_from` it, so sync updates that row instead of adding a new one.
+
+    @implNote Fields are left out: renaming one also has to move its asset-index column.
+    """
+    adopted = []
+    for kind in RENAMEABLE:
+        for key, entry in taxonomy[kind].items():
+            old = str(entry.get("renamed_from", "")).lower()
+            if old and key not in state[kind] and old in state[kind]:
+                state[kind][key] = state[kind].pop(old)
+                adopted.append((kind, entry["renamed_from"], entry["name"]))
+    return adopted
+
+
 def likely_renames(taxonomy, state):
     """A single declared-but-missing entry next to a single undeclared one is a rename made in the UI."""
     renames = []
@@ -339,6 +356,8 @@ def likely_renames(taxonomy, state):
 
 def check(taxonomy):
     state, problems = db_state(), []
+    for kind, old, new in adopt_declared_renames(taxonomy, state):
+        problems.append(f"{SINGULAR[kind]} '{old}' is declared renamed to '{new}'; run sync")
     for kind, declared, actual in likely_renames(taxonomy, state):
         problems.append(f"{SINGULAR[kind]} '{declared}' looks renamed to '{actual}' in shelf; rename it in data/catalog.toml")
     for kind in ("categories", "fields", "tags", "locations", "models"):
