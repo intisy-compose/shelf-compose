@@ -16,6 +16,7 @@ import argparse
 import datetime
 import io
 import json
+import math
 import os
 import secrets
 import string
@@ -35,6 +36,19 @@ PRODUCT_IMAGE_SIZE = 1200
 PRODUCT_IMAGE_MARGIN = 0.06
 CUTOUT_IMAGE = "danielgatis/rembg"
 CUTOUT_MODEL = "birefnet-general"
+LABELS_PATH = os.path.join(DATA_DIR, "labels", "labels.pdf")
+PAGE_SIZE_MM = (210, 297)
+# Measured from a 100 dpi scan of the CD label sheet, from the page's top-left; adjust after a test print.
+RING_CENTRES_MM = ((102.5, 72.3), (102.5, 221.1))
+RING_OUTER_RADIUS_MM = 58.5
+RING_HOLE_RADIUS_MM = 20.5
+RING_SAFETY_MM = 2.5
+LABEL_SIZE_MM = (13, 15)
+LABEL_GAP_MM = 1.0
+LABEL_PADDING_MM = 0.6
+LABEL_TEXT_SIZE_MM = 2.6
+QR_QUIET_MODULES = 2
+HELVETICA_BOLD_WIDTHS = {"S": 667, "A": 722, "M": 833, "-": 333, **{digit: 556 for digit in "0123456789"}}
 RENAMEABLE = ("categories", "tags", "locations", "models")
 SINGULAR = {"categories": "category", "fields": "field", "tags": "tag", "locations": "location", "models": "model"}
 
@@ -648,6 +662,145 @@ def straighten(image):
     return rotated.rotate(90, expand=True) if rotated.height > rotated.width else rotated
 
 
+def ring_slots():
+    """Places labels radially around a ring, in as many circles as fit between the hole and the edge.
+
+    Each slot is (inner radius, angle in degrees). Radially placed labels only spread apart outwards,
+    so neighbours are spaced by their inner corners and the next circle starts beyond the outer corners.
+    """
+    width, height = LABEL_SIZE_MM
+    radius = RING_HOLE_RADIUS_MM + RING_SAFETY_MM
+    limit = RING_OUTER_RADIUS_MM - RING_SAFETY_MM
+    slots = []
+    while math.hypot(radius + height, width / 2) <= limit:
+        pitch = 2 * math.degrees(math.atan((width + LABEL_GAP_MM) / 2 / radius))
+        count = int(360 // pitch)
+        slots += [(radius, 90 - index * 360 / count) for index in range(count)]
+        radius = math.hypot(radius + height, width / 2) + LABEL_GAP_MM
+    return slots
+
+
+def label_assets(wanted_ids):
+    rows = query('select distinct on (a."sequentialId") a."sequentialId" as id, q.id as qr from "Asset" a '
+                 'join "Qr" q on q."assetId" = a.id order by a."sequentialId", q."createdAt"')
+    if not wanted_ids:
+        return rows
+    found = {row["id"]: row for row in rows}
+    missing = [asset_id for asset_id in wanted_ids if asset_id not in found]
+    if missing:
+        raise CatalogError(f"no asset with a QR code: {', '.join(missing)}")
+    return [found[asset_id] for asset_id in wanted_ids]
+
+
+def qr_modules(url):
+    try:
+        import segno
+    except ImportError:
+        raise CatalogError("labels needs segno: python -m pip install segno")
+    return segno.make(url, error="l", boost_error=False).matrix
+
+
+def label_drawing(asset_id, modules):
+    """PDF operators for one label in its own frame: x across, y outwards from the ring centre, in mm."""
+    width, height = LABEL_SIZE_MM
+    pad = LABEL_PADDING_MM
+    text_width = sum(HELVETICA_BOLD_WIDTHS.get(char, 600) for char in asset_id) / 1000 * LABEL_TEXT_SIZE_MM
+    text_top = pad + 0.75 * LABEL_TEXT_SIZE_MM
+    side = min(width - 2 * pad, height - text_top - pad - 0.4)
+    module = side / (len(modules) + 2 * QR_QUIET_MODULES)
+    left = -side / 2 + QR_QUIET_MODULES * module
+    top = height - pad - QR_QUIET_MODULES * module
+    operators = [f"0.1 w 0.6 G {-width / 2:.3f} 0 {width:.3f} {height:.3f} re S", "0 g"]
+    for row_index, row in enumerate(modules):
+        y = top - (row_index + 1) * module
+        for start, length in dark_runs(row):
+            operators.append(f"{left + start * module:.3f} {y:.3f} {length * module:.3f} {module:.3f} re")
+    operators.append("f")
+    operators.append(f"BT /F1 {LABEL_TEXT_SIZE_MM} Tf {-text_width / 2:.3f} {pad + 0.2:.3f} Td ({asset_id}) Tj ET")
+    return "\n".join(operators)
+
+
+def dark_runs(row):
+    runs, start = [], None
+    for index, dark in enumerate(list(row) + [0]):
+        if dark and start is None:
+            start = index
+        elif not dark and start is not None:
+            runs.append((start, index - start))
+            start = None
+    return runs
+
+
+def circle_path(x, y, radius):
+    k = 0.5523 * radius
+    return (f"{x + radius:.3f} {y:.3f} m {x + radius:.3f} {y + k:.3f} {x + k:.3f} {y + radius:.3f} {x:.3f} {y + radius:.3f} c "
+            f"{x - k:.3f} {y + radius:.3f} {x - radius:.3f} {y + k:.3f} {x - radius:.3f} {y:.3f} c "
+            f"{x - radius:.3f} {y - k:.3f} {x - k:.3f} {y - radius:.3f} {x:.3f} {y - radius:.3f} c "
+            f"{x + k:.3f} {y - radius:.3f} {x + radius:.3f} {y - k:.3f} {x + radius:.3f} {y:.3f} c S")
+
+
+def sheet_content(placed, outline):
+    """One page: every (ring centre, slot, drawing) placed, with y flipped so centres read from the top-left."""
+    points_per_mm = 72 / 25.4
+    operators = [f"{points_per_mm:.6f} 0 0 {points_per_mm:.6f} 0 0 cm"]
+    if outline:
+        operators.append("0.2 w 0 G [1 1] 0 d")
+        for centre_x, centre_y in RING_CENTRES_MM:
+            for radius in (RING_OUTER_RADIUS_MM, RING_HOLE_RADIUS_MM):
+                operators.append(circle_path(centre_x, PAGE_SIZE_MM[1] - centre_y, radius))
+        operators.append("[] 0 d")
+    for (centre_x, centre_y), (radius, angle), drawing in placed:
+        cos, sin = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+        origin_x = centre_x + cos * radius
+        origin_y = PAGE_SIZE_MM[1] - centre_y + sin * radius
+        operators.append(f"q {sin:.6f} {-cos:.6f} {cos:.6f} {sin:.6f} {origin_x:.3f} {origin_y:.3f} cm\n{drawing}\nQ")
+    return "\n".join(operators)
+
+
+def pdf_document(pages):
+    """A minimal PDF: one Helvetica-Bold font and one uncompressed content stream per page."""
+    width, height = (size * 72 / 25.4 for size in PAGE_SIZE_MM)
+    page_ids = [4 + 2 * index for index in range(len(pages))]
+    objects = {
+        1: "<< /Type /Catalog /Pages 2 0 R >>",
+        2: f"<< /Type /Pages /Kids [{' '.join(f'{page_id} 0 R' for page_id in page_ids)}] /Count {len(pages)} >>",
+        3: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    }
+    for page_id, content in zip(page_ids, pages):
+        objects[page_id] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width:.2f} {height:.2f}] "
+                            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {page_id + 1} 0 R >>")
+        objects[page_id + 1] = f"<< /Length {len(content.encode('latin-1'))} >>\nstream\n{content}\nendstream"
+    output = b"%PDF-1.4\n"
+    offsets = {}
+    for object_id in sorted(objects):
+        offsets[object_id] = len(output)
+        output += f"{object_id} 0 obj\n{objects[object_id]}\nendobj\n".encode("latin-1")
+    xref = len(output)
+    output += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("latin-1")
+    output += "".join(f"{offsets[object_id]:010d} 00000 n \n" for object_id in sorted(objects)).encode("latin-1")
+    output += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("latin-1")
+    return output
+
+
+def print_labels(wanted_ids, output, outline, config):
+    """Writes ring-shaped label sheets: every asset's ID and shelf QR code, placed to be cut apart."""
+    slots = [(centre, slot) for centre in RING_CENTRES_MM for slot in ring_slots()]
+    assets = label_assets(wanted_ids)
+    server_url = config["SERVER_URL"].rstrip("/")
+    pages = []
+    for first in range(0, len(assets), len(slots)):
+        batch = assets[first:first + len(slots)]
+        placed = [(centre, slot, label_drawing(asset["id"], qr_modules(f"{server_url}/qr/{asset['qr']}")))
+                  for (centre, slot), asset in zip(slots, batch)]
+        pages.append(sheet_content(placed, outline))
+    if not pages:
+        raise CatalogError("no assets to label")
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    with open(output, "wb") as handle:
+        handle.write(pdf_document(pages))
+    return [f"+ {output}: {len(assets)} labels on {len(pages)} sheet(s), {len(slots)} per sheet; print at actual size"]
+
+
 def list_assets():
     rows = query('select a."sequentialId" as id, a.title, c.name as category, m.name as model, l.name as location, a.value, '
                  'coalesce((select string_agg(t.name, \', \' order by t.name) from "_AssetToTag" x join "Tag" t on t.id = x."B" where x."A" = a.id), \'\') as tags, '
@@ -661,14 +814,19 @@ def list_assets():
 
 def main():
     parser = argparse.ArgumentParser(prog="docker-compose.ps1 catalog")
-    parser.add_argument("command", choices=["check", "sync", "add", "update", "list", "images", "cutout"])
-    parser.add_argument("file", nargs="?", help="batch file for add / update, photo for cutout")
+    parser.add_argument("command", choices=["check", "sync", "add", "update", "list", "images", "cutout", "labels"])
+    parser.add_argument("file", nargs="?", help="batch file for add / update, photo for cutout, PDF to write for labels")
     parser.add_argument("output", nargs="?", help="cutout: the transparent PNG to write, e.g. data/images/<model>.png")
     parser.add_argument("--prune", action="store_true", help="sync: also delete undeclared, unused taxonomy")
+    parser.add_argument("--ids", help="labels: only these assets, comma separated, e.g. SAM-0001,SAM-0007")
+    parser.add_argument("--outline", action="store_true", help="labels: also draw the ring edges, for a test print")
     arguments = parser.parse_args()
     try:
         if arguments.command == "list":
             lines = list_assets()
+        elif arguments.command == "labels":
+            wanted_ids = [part.strip() for part in arguments.ids.split(",")] if arguments.ids else []
+            lines = print_labels(wanted_ids, arguments.file or LABELS_PATH, arguments.outline, read_config())
         elif arguments.command == "cutout":
             if not arguments.file or not arguments.output:
                 raise CatalogError("cutout needs a photo and an output path")
