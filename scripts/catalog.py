@@ -38,9 +38,9 @@ CUTOUT_IMAGE = "danielgatis/rembg"
 CUTOUT_MODEL = "birefnet-general"
 LABELS_PATH = os.path.join(DATA_DIR, "labels", "labels.pdf")
 PAGE_SIZE_MM = (210, 297)
-# From a 100 dpi scan of the CD label sheet, corrected for the 2.5 mm the scanner cut off the left
-# edge and 1.9 mm off the top: centred across the page and symmetric top to bottom.
-RING_CENTRES_MM = ((105, 74), (105, 223))
+# Measured on a test print against a real sheet, not from the scan: the rings sit 5 mm left of the
+# page centre and further apart than the scan suggested.
+RING_CENTRES_MM = ((100, 72), (100, 225))
 RING_OUTER_RADIUS_MM = 58.5
 RING_HOLE_RADIUS_MM = 20.5
 RING_SAFETY_MM = 2.5
