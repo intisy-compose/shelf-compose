@@ -6,6 +6,9 @@ $forwarded = $args
 
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot "scripts\data-on-disk.ps1")
+. (Join-Path $PSScriptRoot "scripts\database-key.ps1")
+
 $configFile  = Join-Path $PSScriptRoot "config.env"
 $exampleFile = Join-Path $PSScriptRoot "config.env.example"
 $composeArgs = @("--env-file", $configFile)
@@ -119,6 +122,11 @@ function Connect-Tailnet {
     }
 }
 
+function Confirm-DatabaseKey {
+    try { Assert-DatabaseKey (Join-Path $PSScriptRoot "data\secrets\pgsodium_root.key") "shelf-compose_shelf-db" }
+    catch { Write-Err $_.Exception.Message; exit 1 }
+}
+
 function Show-Urls {
     $config = Read-Config
     Write-Host ""
@@ -200,10 +208,10 @@ Set-Location $PSScriptRoot
 
 switch ($Command.ToLower()) {
     "init-config" { Initialize-Config; break }
-    "up"      { Assert-Config; Connect-Tailnet; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Show-Urls }; break }
+    "up"      { Confirm-DatabaseKey; Assert-Config; Connect-Tailnet; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Show-Urls }; break }
     "down"    { Write-Step "Stopping everything..."; docker compose @composeArgs down; break }
-    "restart" { Assert-Config; Connect-Tailnet; Write-Step "Recreating..."; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
-    "rebuild" { Assert-Config; Connect-Tailnet; Write-Step "Rebuilding..."; docker compose @composeArgs build; if ($LASTEXITCODE -ne 0) { exit 1 }; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
+    "restart" { Confirm-DatabaseKey; Assert-Config; Connect-Tailnet; Write-Step "Recreating..."; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
+    "rebuild" { Confirm-DatabaseKey; Assert-Config; Connect-Tailnet; Write-Step "Rebuilding..."; docker compose @composeArgs build; if ($LASTEXITCODE -ne 0) { exit 1 }; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
     "url"     { Show-Urls; break }
     "status"  { docker compose @composeArgs ps -a; break }
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
