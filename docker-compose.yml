@@ -3,6 +3,12 @@
 # --env-file config.env and fills in the tailnet URLs once the node has joined.
 name: shelf-compose
 
+x-volume-roles:
+  shelf-db: dumped
+  shelf-db-config: rebuilt
+  shelf-caddy-data: rebuilt
+  tailscale-socket: rebuilt
+
 services:
   # Owns the network namespace that gateway and shelf share, and forwards tailnet :443 and :8443 to
   # Caddy. The node key lives in data/tailscale; TS_AUTHKEY is only needed for the first join.
@@ -90,7 +96,9 @@ services:
       - ./db/99-jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
       # Named volumes: Postgres on a Windows bind mount fails on file permissions.
       - shelf-db:/var/lib/postgresql/data
-      # Holds the pgsodium root key; losing it makes encrypted columns unreadable.
+      # The pgsodium root key lives in data/secrets; losing it makes encrypted columns unreadable.
+      # The entrypoint copies it into shelf-db-config because a Windows bind mount is root-only (0640).
+      - ./data/secrets/pgsodium_root.key:/run/secrets/pgsodium_root.key:ro
       - shelf-db-config:/etc/postgresql-custom
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
@@ -106,6 +114,11 @@ services:
       PGDATABASE: postgres
       POSTGRES_DB: postgres
       JWT_EXP: 3600
+    entrypoint:
+      - sh
+      - -c
+      - cp /run/secrets/pgsodium_root.key /etc/postgresql-custom/pgsodium_root.key && chown postgres:postgres /etc/postgresql-custom/pgsodium_root.key && chmod 0640 /etc/postgresql-custom/pgsodium_root.key && exec docker-entrypoint.sh "$$@"
+      - --
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "log_min_messages=fatal"]
 
   auth:
