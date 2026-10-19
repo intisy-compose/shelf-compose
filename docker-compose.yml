@@ -1,7 +1,7 @@
 # shelf.nu asset management with a self-hosted Supabase (Postgres, Auth, Storage), reachable over
 # Tailscale. Every image is pinned; start it through docker-compose.ps1, which passes
 # --env-file config.env and fills in the tailnet URLs once the node has joined.
-name: shelf
+name: shelf-compose
 
 services:
   # Owns the network namespace that gateway and shelf share, and forwards tailnet :443 and :8443 to
@@ -51,7 +51,7 @@ services:
     build:
       context: ./shelf-image
     image: shelf-osm:2.2.0
-    container_name: shelf
+    container_name: shelf-server
     restart: unless-stopped
     network_mode: "service:tailscale"
     depends_on:
