@@ -27,9 +27,30 @@ function Test-ContainerIsRunning([string]$Name) {
     return [bool](docker ps -q --filter "name=^$Name$")
 }
 
+<#
+.SYNOPSIS
+Runs a docker-compose.ps1 verb; only "down" has its exit code trusted.
+.NOTES
+After "up" the exit code belongs to whichever native call ran last inside it, not to "up" itself, so
+success after "up" is judged by the table counts instead.
+#>
 function Invoke-Stack([string]$Verb) {
     & (Join-Path $PSScriptRoot "..\docker-compose.ps1") $Verb
-    if ($LASTEXITCODE -ne 0) { throw "docker-compose.ps1 $Verb failed with exit code $LASTEXITCODE" }
+    if ($Verb -eq "down" -and $LASTEXITCODE -ne 0) { throw "docker-compose.ps1 down failed with exit code $LASTEXITCODE" }
+}
+
+function Test-DumpIsRestorable([string]$DumpName) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $listing = docker exec $ProveBackupContainer pg_restore --list "/backups/$DumpName" 2>$null
+        return ($LASTEXITCODE -eq 0) -and [bool]($listing | Where-Object { $_ -match "TABLE DATA" })
+    }
+    finally { $ErrorActionPreference = $previousPreference }
+}
+
+function Write-RecoveryHint([string]$DumpName) {
+    Write-Err "The volumes were deleted. Recover with: .\docker-compose.ps1 up   then   .\docker-compose.ps1 restore $DumpName"
 }
 
 <#
@@ -71,23 +92,28 @@ function Invoke-ProveData {
     Invoke-Backup
     $newest = Get-NewestDump (Join-Path $PSScriptRoot "..\data\backups") "shelf-*.dump"
     if (-not $newest) { throw "no complete dump exists in data\backups" }
+    if (-not (Test-DumpIsRestorable $newest.Name)) { throw "$($newest.Name) cannot be listed by pg_restore or holds no table data; nothing was deleted" }
 
     Write-Step "Counting rows before ..."
     $before = Get-ShelfTableCounts
     Write-Host "  $($before.Count) tables, dump $($newest.Name)" -ForegroundColor Gray
 
     Write-Step "Stopping the stack and deleting its volumes ..."
-    Invoke-Stack "down"
-    Remove-StackVolumes
+    try {
+        Invoke-Stack "down"
+        Remove-StackVolumes
 
-    Write-Step "Starting the stack and waiting for the self-restore ..."
-    Invoke-Stack "up"
+        Write-Step "Starting the stack and waiting for the self-restore ..."
+        Invoke-Stack "up"
 
-    Write-Step "Counting rows after ..."
-    $after = Get-ShelfTableCounts
+        Write-Step "Counting rows after ..."
+        $after = Get-ShelfTableCounts
+    }
+    catch { Write-RecoveryHint $newest.Name; throw }
     $differences = Compare-TableCounts $before $after
     if ($differences) {
         $differences | ForEach-Object { Write-Host "  DIFFERS $_" -ForegroundColor Red }
+        Write-RecoveryHint $newest.Name
         exit 1
     }
     Write-Host "  all $($after.Count) tables match" -ForegroundColor Green
