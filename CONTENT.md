@@ -98,7 +98,7 @@ photos. The public data template ships a starter `catalog.toml` that shows the f
 
 ## Data and backups
 
-The database lives in the Docker volume `shelf_shelf-db`, because Postgres on a Windows bind mount
+The database lives in the Docker volume `shelf-compose_shelf-db`, because Postgres on a Windows bind mount
 fails on file permissions. `db-backup` dumps it every hour into `data/backups` and keeps the newest
 `BACKUP_KEEP` (48 by default). Take one on demand before a risky change, and restore with:
 
