@@ -153,6 +153,23 @@ function Invoke-Restore([object[]]$RestoreArguments) {
     Write-OK "Restored $file."
 }
 
+function Format-DumpAge([datetime]$WrittenAt) {
+    $age = (Get-Date) - $WrittenAt
+    if ($age.TotalHours -ge 24) { return "{0} d {1} h old" -f [int]$age.Days, [int]$age.Hours }
+    if ($age.TotalHours -ge 1) { return "{0} h {1} min old" -f [int]$age.Hours, [int]$age.Minutes }
+    return "{0} min old" -f [int]$age.TotalMinutes
+}
+
+function Get-ShelfDumpToRestore {
+    Get-DumpToRestore "shelf-compose_shelf-db" (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump"
+}
+
+function Restore-EmptyDatabase([System.IO.FileInfo]$Dump) {
+    if (-not $Dump) { return }
+    Write-Step "Restoring $($Dump.Name) ($(Format-DumpAge $Dump.LastWriteTime)) into the empty database..."
+    Invoke-Restore @($Dump.Name)
+}
+
 function Invoke-Backup {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
     $file = "shelf-$stamp.dump"
@@ -208,7 +225,7 @@ Set-Location $PSScriptRoot
 
 switch ($Command.ToLower()) {
     "init-config" { Initialize-Config; break }
-    "up"      { Confirm-DatabaseKey; Assert-Config; Connect-Tailnet; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Show-Urls }; break }
+    "up"      { Confirm-DatabaseKey; Assert-Config; $dumpToRestore = Get-ShelfDumpToRestore; Connect-Tailnet; Write-Step "Starting shelf..."; docker compose @composeArgs up -d; if ($LASTEXITCODE -eq 0) { Restore-EmptyDatabase $dumpToRestore; Show-Urls }; break }
     "down"    { Write-Step "Stopping everything..."; docker compose @composeArgs down; break }
     "restart" { Confirm-DatabaseKey; Assert-Config; Connect-Tailnet; Write-Step "Recreating..."; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
     "rebuild" { Confirm-DatabaseKey; Assert-Config; Connect-Tailnet; Write-Step "Rebuilding..."; docker compose @composeArgs build; if ($LASTEXITCODE -ne 0) { exit 1 }; docker compose @composeArgs up -d --force-recreate; Show-Urls; break }
