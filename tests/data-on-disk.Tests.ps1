@@ -49,6 +49,15 @@ Describe "Assert-DatabaseKey" {
     }
 
     foreach ($volume in @($emptyVolume, $filledVolume)) {
+        It "throws naming the folder when a folder stands at the key path (volume $volume)" {
+            $keyPath = Join-Path $keyFolder "pgsodium_root.key"
+            New-Item -ItemType Directory -Path $keyPath | Out-Null
+            { Assert-DatabaseKey $keyPath $volume } | Should Throw "is a folder"
+            Test-Path -LiteralPath $keyPath -PathType Container | Should Be $true
+        }
+    }
+
+    foreach ($volume in @($emptyVolume, $filledVolume)) {
         It "leaves an existing key byte-identical (volume $volume)" {
             $keyPath = Join-Path $keyFolder "pgsodium_root.key"
             [System.IO.File]::WriteAllText($keyPath, ("ab" * 32))
