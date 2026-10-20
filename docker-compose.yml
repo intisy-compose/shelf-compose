@@ -262,6 +262,8 @@ services:
       - |
         log() { echo "$$(date '+%Y-%m-%d %H:%M:%S') $$1" >> /backups/backup.log; }
         while true; do
+          # One interval first, so no pass dumps a database that `up` is still restoring or migrate is changing.
+          sleep 3600
           # A dump killed mid-write (container stop) leaves its .tmp behind, and nothing else removes it.
           rm -f /backups/shelf-*.dump.tmp
           ts=$$(date +%Y%m%d-%H%M%S)
@@ -276,7 +278,6 @@ services:
             log "FAILED shelf-$$ts.dump"
           fi
           ls -1t /backups/shelf-*.dump 2>/dev/null | tail -n +$$(( ${BACKUP_KEEP:-48} + 1 )) | while read -r old; do rm -f "$$old"; log "deleted $$(basename "$$old")"; done
-          sleep 3600
         done
 
 volumes:
