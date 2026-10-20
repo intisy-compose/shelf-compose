@@ -136,8 +136,9 @@ function Show-Urls {
     $config = Read-Config
     Write-Host ""
     Write-Host "  shelf          : $($config['SERVER_URL'])   (from any device on your tailnet)"
+    Write-Host "                   http://localhost:8444   (on this PC)"
     Write-Host "  Supabase       : $($config['SUPABASE_URL'])"
-    Write-Host "  Mail (Mailpit) : http://localhost:$(if ($config['MAILPIT_PORT']) { $config['MAILPIT_PORT'] } else { 8025 })"
+    Write-Host "  Mail (Mailpit) : http://localhost:8025   (on this PC only)"
 }
 
 function Invoke-PgRestore([string]$File) {

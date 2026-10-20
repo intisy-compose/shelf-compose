@@ -7,8 +7,8 @@ uses on your own machine instead, so nothing leaves it, and serves it over
 
 | service | image | role |
 | --- | --- | --- |
-| `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `shelf` and forwards `:443` and `:8443` |
-| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name, with certificates from Tailscale |
+| `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `shelf` inside the gateway's network namespace and forwards `:443` and `:8443` to it |
+| `gateway` | `caddy:2.11.4-alpine` | the shared gateway: HTTPS for the `ts.net` name, with certificates from Tailscale, and `localhost:8444`, `8445` and Mailpit's `8025` on this PC |
 | `shelf` | built from `ghcr.io/shelf-nu/shelf.nu:2.2.0` | the app, at `https://shelf.<tailnet>.ts.net`, with OpenStreetMap maps |
 | `db` | `supabase/postgres:17.6.1.136` | Postgres with Supabase's roles and schemas |
 | `auth` | `supabase/gotrue:v2.196.0` | Supabase Auth, set up for shelf's 6-digit email codes |
@@ -50,8 +50,9 @@ afterwards, so an expired key does not matter once the node is in.
 - **Real email:** set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM`. Port 465
   uses TLS, any other port plain SMTP. Both shelf and Supabase Auth send through it.
 - **Name:** `TS_HOSTNAME` (default `shelf`) is the node's name on the tailnet. shelf is served at
-  `https://<TS_HOSTNAME>.<tailnet>.ts.net` and Supabase on `:8443` of the same name; both are
-  tailnet-only, nothing is published to the internet.
+  `https://<TS_HOSTNAME>.<tailnet>.ts.net` and Supabase on `:8443` of the same name, and on this PC
+  at `http://localhost:8444` and `http://localhost:8445`; nothing listens on the LAN or the
+  internet.
 - **How the URL works everywhere:** shelf's server calls `SUPABASE_URL` just like the browser does.
   shelf, Caddy and Tailscale share one network namespace, and inside it the `ts.net` name maps to
   `127.0.0.1`, so the server reaches Caddy directly with the same valid certificate.

@@ -1,57 +1,38 @@
 # shelf.nu asset management with a self-hosted Supabase (Postgres, Auth, Storage), reachable over
-# Tailscale. Every image is pinned; start it through docker-compose.ps1, which passes
+# Tailscale and on this PC's 127.0.0.1:8444. Every image is pinned; start it through docker-compose.ps1, which passes
 # --env-file config.env and fills in the tailnet URLs once the node has joined.
 name: shelf-compose
 
 x-volume-roles:
   shelf-db: dumped
   shelf-db-config: rebuilt
-  shelf-caddy-data: rebuilt
+  gateway-caddy-data: rebuilt
   tailscale-socket: rebuilt
 
 services:
-  # Owns the network namespace that gateway and shelf share, and forwards tailnet :443 and :8443 to
-  # Caddy. The node key lives in data/tailscale; TS_AUTHKEY is only needed for the first join.
-  tailscale:
-    image: tailscale/tailscale:v1.102.4
-    container_name: shelf-tailscale
-    hostname: ${TS_HOSTNAME:-shelf}
-    restart: unless-stopped
+  # shelf shares this namespace. It answers 502 until auth, storage and shelf are up, and starts
+  # without them so `up` can join the tailnet before they need the ts.net name.
+  gateway:
+    extends: { file: gateway/gateway.yml, service: gateway }
+    container_name: shelf-gateway
+    ports:
+      - "127.0.0.1:8444:8444"
+      - "127.0.0.1:8445:8445"
+      - "127.0.0.1:8025:8025"
     environment:
-      TS_AUTHKEY: ${TS_AUTHKEY:-}
-      TS_HOSTNAME: ${TS_HOSTNAME:-shelf}
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_USERSPACE: "true"
-      TS_SOCKET: /var/run/tailscale/tailscaled.sock
-      TS_SERVE_CONFIG: /config/serve.json
+      TAILNET_HOST: ${SHELF_HOST:-shelf.invalid}
     volumes:
-      - ./data/tailscale:/var/lib/tailscale
-      - ./gateway/serve.json:/config/serve.json:ro
-      - tailscale-socket:/var/run/tailscale
+      - ./gateway/templates:/srv/templates:ro
     # shelf's server calls SUPABASE_URL too; inside this namespace the ts.net name has to reach Caddy
     # directly, since userspace networking cannot dial the node's own tailnet address.
     extra_hosts:
       - "${SHELF_HOST:-shelf.invalid}:127.0.0.1"
 
-  gateway:
-    image: caddy:2.11.4-alpine
-    container_name: shelf-gateway
-    restart: unless-stopped
-    network_mode: "service:tailscale"
+  tailscale:
+    extends: { file: gateway/gateway.yml, service: tailscale }
+    container_name: shelf-tailscale
     environment:
-      SHELF_HOST: ${SHELF_HOST:-shelf.invalid}
-    volumes:
-      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./gateway/templates:/srv/templates:ro
-      - tailscale-socket:/var/run/tailscale
-      - shelf-caddy-data:/data
-    depends_on:
-      tailscale:
-        condition: service_started
-      auth:
-        condition: service_healthy
-      storage:
-        condition: service_healthy
+      TS_HOSTNAME: ${TS_HOSTNAME:-shelf}
 
   shelf:
     build:
@@ -59,7 +40,7 @@ services:
     image: shelf-osm:2.2.0
     container_name: shelf-server
     restart: unless-stopped
-    network_mode: "service:tailscale"
+    network_mode: "service:gateway"
     depends_on:
       gateway:
         condition: service_started
@@ -155,9 +136,9 @@ services:
       # shelf only accepts 6-digit codes; GoTrue's default is 8.
       GOTRUE_MAILER_OTP_LENGTH: 6
       GOTRUE_MAILER_OTP_EXP: 3600
-      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://tailscale:8000/templates/confirmation.html
-      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://tailscale:8000/templates/magic_link.html
-      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://tailscale:8000/templates/recovery.html
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://gateway:8000/templates/confirmation.html
+      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: http://gateway:8000/templates/magic_link.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://gateway:8000/templates/recovery.html
       GOTRUE_MAILER_SUBJECTS_CONFIRMATION: Your shelf confirmation code
       GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: Your shelf login code
       GOTRUE_MAILER_SUBJECTS_RECOVERY: Your shelf password reset code
@@ -202,8 +183,6 @@ services:
     image: axllent/mailpit:v1.31.2
     container_name: shelf-mail
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
 
   migrate:
     build:
@@ -283,5 +262,5 @@ services:
 volumes:
   shelf-db:
   shelf-db-config:
-  shelf-caddy-data:
+  gateway-caddy-data:
   tailscale-socket:

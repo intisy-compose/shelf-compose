@@ -1,45 +1,15 @@
-# Runs inside the tailscale container's network namespace. Certificates for the ts.net name come
-# from tailscaled over its socket, so shelf and the browser both get real, auto-renewed HTTPS.
+# The shared gateway from intisy-compose/workflows gateway/, vendored byte for byte; a stack's own
+# sites live in sites.caddy. tailscale shares this container's network namespace, and certificates
+# for the ts.net name come from tailscaled over its socket, never from a public CA.
 {
 	admin off
 	auto_https disable_redirects
 }
 
-{$SHELF_HOST}:443 {
-	# Map tiles from OpenStreetMap, which needs no key; the shelf image points its map here.
-	# OSM's tile policy asks for an identifying User-Agent and honoured caching.
-	handle_path /osm-tiles/* {
-		reverse_proxy https://tile.openstreetmap.org {
-			header_up Host tile.openstreetmap.org
-			header_up User-Agent "shelf-compose (self-hosted shelf.nu; https://github.com/intisy-compose/shelf-compose)"
-			header_up -Cookie
-			header_up -Authorization
-		}
-	}
-	handle {
-		reverse_proxy 127.0.0.1:8080
+(tailnet) {
+	tls {
+		get_certificate tailscale
 	}
 }
 
-# The Supabase URL: Auth and Storage under their usual paths.
-{$SHELF_HOST}:8443 {
-	request_body {
-		max_size 50MB
-	}
-	handle_path /auth/v1/* {
-		reverse_proxy auth:9999
-	}
-	handle_path /storage/v1/* {
-		reverse_proxy storage:5000 {
-			header_up X-Forwarded-Prefix /storage/v1
-		}
-	}
-}
-
-# Plain HTTP on the Docker network only: the OTP email templates GoTrue fetches.
-http://:8000 {
-	handle_path /templates/* {
-		root * /srv/templates
-		file_server
-	}
-}
+import sites.caddy

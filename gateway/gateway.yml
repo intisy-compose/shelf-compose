@@ -1,0 +1,38 @@
+# The shared gateway from intisy-compose/workflows gateway/, vendored byte for byte. A stack extends
+# both services and adds only its own values: container names, TAILNET_HOST, TS_HOSTNAME, the
+# gateway's 127.0.0.1 ports, and the named volumes gateway-caddy-data and tailscale-socket.
+services:
+  # Owns the network namespace and publishes the local ports, on loopback only, so the local
+  # addresses keep working while tailscale restarts or cannot join.
+  gateway:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      TAILNET_HOST: ${TAILNET_HOST:-tailnet.invalid}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./sites.caddy:/etc/caddy/sites.caddy:ro
+      - tailscale-socket:/var/run/tailscale
+      - gateway-caddy-data:/data
+
+  # Joins the gateway's namespace, not the other way round: a tailscale that cannot join exits and
+  # restarts, and a gateway inside its namespace would lose the local addresses each time. The node
+  # key lives in data/tailscale; TS_AUTHKEY is only needed for the first join.
+  tailscale:
+    image: tailscale/tailscale:v1.102.4
+    restart: unless-stopped
+    network_mode: "service:gateway"
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ../data/tailscale:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+      - tailscale-socket:/var/run/tailscale
+    depends_on:
+      gateway:
+        condition: service_started
+        restart: true

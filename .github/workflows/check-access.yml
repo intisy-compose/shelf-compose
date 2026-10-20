@@ -1,0 +1,13 @@
+name: Check dashboard access
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: intisy-compose/workflows/.github/workflows/check-access.yml@main
