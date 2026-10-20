@@ -48,6 +48,24 @@ Describe "Assert-DatabaseKey" {
         Test-Path $keyPath | Should Be $false
     }
 
+    It "throws and creates no key when the volume is empty but complete dumps exist" {
+        $keyPath = Join-Path $keyFolder "secrets\pgsodium_root.key"
+        $backups = Join-Path $keyFolder "backups"
+        New-Item -ItemType Directory -Force $backups | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $backups "shelf-20260101-000000.dump"), "dump")
+        { Assert-DatabaseKey $keyPath $emptyVolume $backups "shelf-*.dump" } | Should Throw "original pgsodium_root.key"
+        Test-Path $keyPath | Should Be $false
+    }
+
+    It "creates a key when the volume is empty and the backups folder holds no complete dump" {
+        $keyPath = Join-Path $keyFolder "secrets\pgsodium_root.key"
+        $backups = Join-Path $keyFolder "backups"
+        New-Item -ItemType Directory -Force $backups | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $backups "shelf-20260101-000000.dump"), "")
+        Assert-DatabaseKey $keyPath $emptyVolume $backups "shelf-*.dump"
+        [System.IO.File]::ReadAllText($keyPath) | Should Match '^[0-9a-f]{64}$'
+    }
+
     foreach ($volume in @($emptyVolume, $filledVolume)) {
         It "throws naming the folder when a folder stands at the key path (volume $volume)" {
             $keyPath = Join-Path $keyFolder "pgsodium_root.key"
