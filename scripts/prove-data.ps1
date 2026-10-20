@@ -40,7 +40,8 @@ function Invoke-Stack([string]$Verb) {
 }
 
 function Write-RecoveryHint([string]$DumpName) {
-    Write-Err "The volumes were deleted. Recover with: .\docker-compose.ps1 up   then   .\docker-compose.ps1 restore $DumpName"
+    Write-Err "The volumes were deleted. Recover with: .\docker-compose.ps1 up"
+    Write-Err "If that keeps failing: .\docker-compose.ps1 up -Fresh   then   .\docker-compose.ps1 restore $DumpName"
 }
 
 <#

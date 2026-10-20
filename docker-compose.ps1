@@ -128,7 +128,7 @@ function Connect-Tailnet {
 }
 
 function Confirm-DatabaseKey {
-    try { Assert-DatabaseKey (Join-Path $PSScriptRoot "data\secrets\pgsodium_root.key") $databaseVolume }
+    try { Assert-DatabaseKey (Join-Path $PSScriptRoot "data\secrets\pgsodium_root.key") $databaseVolume (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" }
     catch { Write-Err $_.Exception.Message; exit 1 }
 }
 
@@ -145,7 +145,30 @@ function Invoke-PgRestore([string]$File) {
     return $LASTEXITCODE
 }
 
+function Get-RunningServices {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { return @(docker compose @composeArgs ps --status running --services 2>$null) }
+    finally { $ErrorActionPreference = $previousPreference }
+}
+
+<#
+.SYNOPSIS
+Exits 1 unless db and db-backup are running.
+.NOTES
+With the stack down, the restore would fail at the exec and the trailing `up -d` would then start
+the whole stack on an empty database.
+#>
+function Assert-RestoreServicesRunning {
+    $running = Get-RunningServices
+    $missing = @("db", "db-backup") | Where-Object { $_ -notin $running }
+    if (-not $missing) { return }
+    Write-Err "Cannot restore: $($missing -join ', ') not running. Run .\docker-compose.ps1 up first, or .\docker-compose.ps1 up -Fresh and then restore."
+    exit 1
+}
+
 function Invoke-Restore([object[]]$RestoreArguments) {
+    Assert-RestoreServicesRunning
     $file = if ($RestoreArguments) { "$($RestoreArguments[0])" } else { "" }
     if (-not $file) {
         $latest = Get-CompleteDumps (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" |
@@ -157,8 +180,11 @@ function Invoke-Restore([object[]]$RestoreArguments) {
     Write-Step "Restoring $file (shelf, auth and storage are stopped meanwhile)..."
     docker compose @composeArgs stop shelf gateway auth storage
     $restoreExit = Invoke-PgRestore $file
+    if ($restoreExit -ne 0) {
+        Write-Err "pg_restore reported errors (exit $restoreExit); check the output above. shelf, gateway, auth and storage stay stopped."
+        exit 1
+    }
     docker compose @composeArgs up -d
-    if ($restoreExit -ne 0) { Write-Err "pg_restore reported errors (exit $restoreExit); check the output above."; exit 1 }
     Write-OK "Restored $file."
 }
 
@@ -212,8 +238,16 @@ function Confirm-RestoreDecision([string]$Verb) {
         Format-RestoreRefusal $decision $databaseVolume "data\backups" $Verb | ForEach-Object { Write-Err $_ }
         exit 1
     }
-    if ($decision.Action -eq "Fresh" -and $Fresh) { Write-Step "Starting with an empty database (-Fresh)." }
+    if ($decision.Action -eq "Fresh" -and $Fresh) {
+        Write-Step "Starting with an empty database (-Fresh)."
+        Write-FreshDumpWarning
+    }
     return $decision
+}
+
+function Write-FreshDumpWarning {
+    if (@(Get-CompleteDumps (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump").Count -eq 0) { return }
+    Write-Err "Warning: the hourly dumps of the empty database rotate the old dumps out after BACKUP_KEEP hours unless '.\docker-compose.ps1 restore <file>' runs first."
 }
 
 function Wait-DatabaseReachable {
