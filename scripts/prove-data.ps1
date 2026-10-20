@@ -39,16 +39,6 @@ function Invoke-Stack([string]$Verb) {
     if ($Verb -eq "down" -and $LASTEXITCODE -ne 0) { throw "docker-compose.ps1 down failed with exit code $LASTEXITCODE" }
 }
 
-function Test-DumpIsRestorable([string]$DumpName) {
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $listing = docker exec $ProveBackupContainer pg_restore --list "/backups/$DumpName" 2>$null
-        return ($LASTEXITCODE -eq 0) -and [bool]($listing | Where-Object { $_ -match "TABLE DATA" })
-    }
-    finally { $ErrorActionPreference = $previousPreference }
-}
-
 function Write-RecoveryHint([string]$DumpName) {
     Write-Err "The volumes were deleted. Recover with: .\docker-compose.ps1 up   then   .\docker-compose.ps1 restore $DumpName"
 }
@@ -92,7 +82,7 @@ function Invoke-ProveData {
     Invoke-Backup
     $newest = Get-NewestDump (Join-Path $PSScriptRoot "..\data\backups") "shelf-*.dump"
     if (-not $newest) { throw "no complete dump exists in data\backups" }
-    if (-not (Test-DumpIsRestorable $newest.Name)) { throw "$($newest.Name) cannot be listed by pg_restore or holds no table data; nothing was deleted" }
+    if (-not (Test-DumpIsRestorable $newest)) { throw "$($newest.Name) cannot be listed by pg_restore or holds no table data; nothing was deleted" }
 
     Write-Step "Counting rows before ..."
     $before = Get-ShelfTableCounts
