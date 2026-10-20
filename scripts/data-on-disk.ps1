@@ -86,15 +86,38 @@ function Get-TableRowCounts([string]$Container, [string]$DatabaseHost, [string]$
 
 <#
 .SYNOPSIS
-The dump to restore from, or $null when the volume already holds a database or no usable dump exists.
+What `up` does with the database volume: Keep it, Restore Dump into it, start it Fresh, or Refuse.
 .NOTES
-With IsRestorable, dumps it rejects are skipped, so an empty-database dump written while a volume was
-being rebuilt never wins over an older good one.
+Refuse answers an empty volume next to complete dumps that GetRejection all rejects: an empty
+database started there would be dumped hourly and rotate those dumps out within BACKUP_KEEP hours.
+GetRejection returns why a dump cannot be restored, or nothing when it can. AllowFresh starts an
+empty database instead of restoring, but never touches a volume that holds one.
 #>
-function Get-DumpToRestore([string]$Volume, [string]$Folder, [string]$Pattern, [scriptblock]$IsRestorable = $null) {
-    if (-not (Test-DatabaseVolumeIsEmpty $Volume)) { return $null }
+function Get-RestoreDecision([string]$Volume, [string]$Folder, [string]$Pattern, [scriptblock]$GetRejection = $null, [bool]$AllowFresh = $false) {
+    if (-not (Test-DatabaseVolumeIsEmpty $Volume)) { return New-RestoreDecision "Keep" }
+    if ($AllowFresh) { return New-RestoreDecision "Fresh" }
+    $rejected = @()
     foreach ($dump in (Get-CompleteDumps $Folder $Pattern)) {
-        if (-not $IsRestorable -or (& $IsRestorable $dump)) { return $dump }
+        $reason = if ($GetRejection) { "$(& $GetRejection $dump)" } else { "" }
+        if (-not $reason) { return New-RestoreDecision "Restore" $dump $rejected }
+        $rejected += [pscustomobject]@{ Name = $dump.Name; Reason = $reason }
     }
-    return $null
+    if ($rejected.Count -gt 0) { return New-RestoreDecision "Refuse" $null $rejected }
+    return New-RestoreDecision "Fresh"
+}
+
+function New-RestoreDecision([string]$Action, [System.IO.FileInfo]$Dump = $null, [object[]]$Rejected = @()) {
+    return [pscustomobject]@{ Action = $Action; Dump = $Dump; Rejected = @($Rejected) }
+}
+
+<#
+.SYNOPSIS
+The lines to print when a decision is Refuse: every rejected dump with its reason, and the way on.
+#>
+function Format-RestoreRefusal([object]$Decision, [string]$Volume, [string]$FolderName, [string]$Verb) {
+    $lines = @("The database volume $Volume is empty, but no dump in $FolderName can be restored:")
+    foreach ($rejection in $Decision.Rejected) { $lines += "  $($rejection.Name): $($rejection.Reason)" }
+    $lines += "Nothing was started. Put a good dump into $FolderName (from the array or Kopia) and run $Verb again,"
+    $lines += "or start with an empty database on purpose: .\docker-compose.ps1 $Verb -Fresh"
+    return $lines
 }
