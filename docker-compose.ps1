@@ -139,8 +139,8 @@ function Show-Urls {
 function Invoke-Restore([object[]]$RestoreArguments) {
     $file = if ($RestoreArguments) { "$($RestoreArguments[0])" } else { "" }
     if (-not $file) {
-        $latest = Get-ChildItem (Join-Path $PSScriptRoot "data\backups") -Filter "shelf-*.dump" -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending | Select-Object -First 1
+        $latest = Get-CompleteDumps (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" |
+            Where-Object { Test-DumpIsRestorable $_ } | Select-Object -First 1
         if (-not $latest) { Write-Err "No backups in data\backups."; exit 1 }
         $file = $latest.Name
     }
@@ -154,6 +154,33 @@ function Invoke-Restore([object[]]$RestoreArguments) {
     Write-OK "Restored $file."
 }
 
+<#
+.SYNOPSIS
+The image of the db-backup service, whose client tools read dumps.
+#>
+function Get-BackupImage {
+    $compose = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot "docker-compose.yml")
+    if ($compose -notmatch '(?ms)^  db-backup:.*?^    image:\s*(\S+)') { throw "no image found for the db-backup service" }
+    return $Matches[1]
+}
+
+<#
+.SYNOPSIS
+True when pg_restore can list the dump and the listing holds table data.
+.NOTES
+Runs in a throwaway container of the stack's own postgres client image with data/backups mounted
+read-only, so it works while the stack is down. An empty database dumps to a valid file with no table data.
+#>
+function Test-DumpIsRestorable([System.IO.FileInfo]$Dump) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $listing = docker run --rm -v "$($Dump.DirectoryName):/backups:ro" (Get-BackupImage) pg_restore --list "/backups/$($Dump.Name)" 2>$null
+        return ($LASTEXITCODE -eq 0) -and [bool]($listing | Where-Object { $_ -match "TABLE DATA" })
+    }
+    finally { $ErrorActionPreference = $previousPreference }
+}
+
 function Format-DumpAge([datetime]$WrittenAt) {
     $age = (Get-Date) - $WrittenAt
     if ($age.TotalHours -ge 24) { return "{0} d {1} h old" -f [int]$age.Days, [int]$age.Hours }
@@ -162,7 +189,7 @@ function Format-DumpAge([datetime]$WrittenAt) {
 }
 
 function Get-ShelfDumpToRestore {
-    Get-DumpToRestore "shelf-compose_shelf-db" (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump"
+    Get-DumpToRestore "shelf-compose_shelf-db" (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" { param($dump) Test-DumpIsRestorable $dump }
 }
 
 function Restore-EmptyDatabase([System.IO.FileInfo]$Dump) {

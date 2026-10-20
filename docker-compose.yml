@@ -265,7 +265,10 @@ services:
           # A dump killed mid-write (container stop) leaves its .tmp behind, and nothing else removes it.
           rm -f /backups/shelf-*.dump.tmp
           ts=$$(date +%Y%m%d-%H%M%S)
-          if pg_dump -h db -U supabase_admin -d postgres -Fc -f /backups/shelf-$$ts.dump.tmp 2> /backups/last-error.log; then
+          tables=$$(psql -h db -U supabase_admin -d postgres -Atc "select count(*) from information_schema.tables where table_schema = 'public'" 2>/dev/null)
+          if [ "$$tables" = "0" ]; then
+            log "skipped: database has no tables"
+          elif pg_dump -h db -U supabase_admin -d postgres -Fc -f /backups/shelf-$$ts.dump.tmp 2> /backups/last-error.log; then
             mv /backups/shelf-$$ts.dump.tmp /backups/shelf-$$ts.dump
             log "created shelf-$$ts.dump"
           else

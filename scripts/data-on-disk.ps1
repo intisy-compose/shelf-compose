@@ -38,17 +38,24 @@ function Test-DatabaseVolumeIsEmpty([string]$Volume) {
 
 <#
 .SYNOPSIS
-The newest complete dump in a folder, or $null.
+Every complete dump in a folder, newest first.
 .NOTES
 Dumps are named with a sortable timestamp, so name order is age order. A zero-byte file or a
 .tmp is an interrupted dump and is never returned.
 #>
-function Get-NewestDump([string]$Folder, [string]$Pattern) {
-    if (-not (Test-Path -LiteralPath $Folder)) { return $null }
-    Get-ChildItem -LiteralPath $Folder -Filter $Pattern -File |
+function Get-CompleteDumps([string]$Folder, [string]$Pattern) {
+    if (-not (Test-Path -LiteralPath $Folder)) { return @() }
+    return @(Get-ChildItem -LiteralPath $Folder -Filter $Pattern -File |
         Where-Object { $_.Length -gt 0 -and $_.Extension -ne ".tmp" } |
-        Sort-Object Name -Descending |
-        Select-Object -First 1
+        Sort-Object Name -Descending)
+}
+
+<#
+.SYNOPSIS
+The newest complete dump in a folder, or $null.
+#>
+function Get-NewestDump([string]$Folder, [string]$Pattern) {
+    return Get-CompleteDumps $Folder $Pattern | Select-Object -First 1
 }
 
 <#
@@ -79,9 +86,15 @@ function Get-TableRowCounts([string]$Container, [string]$DatabaseHost, [string]$
 
 <#
 .SYNOPSIS
-The dump to restore from, or $null when the volume already holds a database or no complete dump exists.
+The dump to restore from, or $null when the volume already holds a database or no usable dump exists.
+.NOTES
+With IsRestorable, dumps it rejects are skipped, so an empty-database dump written while a volume was
+being rebuilt never wins over an older good one.
 #>
-function Get-DumpToRestore([string]$Volume, [string]$Folder, [string]$Pattern) {
+function Get-DumpToRestore([string]$Volume, [string]$Folder, [string]$Pattern, [scriptblock]$IsRestorable = $null) {
     if (-not (Test-DatabaseVolumeIsEmpty $Volume)) { return $null }
-    return Get-NewestDump $Folder $Pattern
+    foreach ($dump in (Get-CompleteDumps $Folder $Pattern)) {
+        if (-not $IsRestorable -or (& $IsRestorable $dump)) { return $dump }
+    }
+    return $null
 }
