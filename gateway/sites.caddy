@@ -1,0 +1,60 @@
+(shelf) {
+	# Map tiles from OpenStreetMap, which needs no key; the shelf image points its map here.
+	# OSM's tile policy asks for an identifying User-Agent and honoured caching.
+	handle_path /osm-tiles/* {
+		reverse_proxy https://tile.openstreetmap.org {
+			header_up Host tile.openstreetmap.org
+			header_up User-Agent "shelf-compose (self-hosted shelf.nu; https://github.com/intisy-compose/shelf-compose)"
+			header_up -Cookie
+			header_up -Authorization
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+}
+
+# The Supabase URL: Auth and Storage under their usual paths.
+(supabase) {
+	request_body {
+		max_size 50MB
+	}
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+	handle_path /storage/v1/* {
+		reverse_proxy storage:5000 {
+			header_up X-Forwarded-Prefix /storage/v1
+		}
+	}
+}
+
+{$TAILNET_HOST}:443 {
+	import tailnet
+	import shelf
+}
+
+{$TAILNET_HOST}:8443 {
+	import tailnet
+	import supabase
+}
+
+http://:8444 {
+	import shelf
+}
+
+http://:8445 {
+	import supabase
+}
+
+http://:8025 {
+	reverse_proxy mail:8025
+}
+
+# Not published: the OTP email templates GoTrue fetches over the Docker network.
+http://:8000 {
+	handle_path /templates/* {
+		root * /srv/templates
+		file_server
+	}
+}
