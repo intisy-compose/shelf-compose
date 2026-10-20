@@ -9,7 +9,10 @@ holds a cluster would not decrypt that cluster and would silently replace the lo
 throws instead and leaves the file absent. A new key is 64 lowercase hex characters with no newline.
 #>
 function Assert-DatabaseKey([string]$KeyPath, [string]$Volume) {
-    if (Test-Path -LiteralPath $KeyPath) { return }
+    if (Test-Path -LiteralPath $KeyPath -PathType Leaf) { return }
+    if (Test-Path -LiteralPath $KeyPath -PathType Container) {
+        throw "$KeyPath is a folder, not the encryption key file. Docker creates that folder when it starts the database without the key; remove it and put the key file there (or remove it alone when the database volume is empty)."
+    }
     if (-not (Test-DatabaseVolumeIsEmpty $Volume)) {
         throw "The encryption key $KeyPath is missing but volume $Volume holds a database. Restore the key file there; a new key cannot decrypt it."
     }
