@@ -1,9 +1,20 @@
 # The shared gateway from intisy-compose/workflows gateway/, vendored byte for byte; a stack's own
 # sites live in sites.caddy. tailscale shares this container's network namespace, and certificates
 # for the ts.net name come from tailscaled over its socket, never from a public CA.
+# TAILNET_PROXY_PROTOCOL=require makes :443 read the caller's tailnet address from a PROXY protocol
+# header, for a stack whose serve.json forwards 443 with "ProxyProtocol": 2; the default skip leaves
+# every connection untouched, so a header a caller sends itself is never believed.
 {
 	admin off
 	auto_https disable_redirects
+	servers :443 {
+		listener_wrappers {
+			proxy_protocol {
+				fallback_policy {$TAILNET_PROXY_PROTOCOL:skip}
+			}
+			tls
+		}
+	}
 }
 
 (tailnet) {

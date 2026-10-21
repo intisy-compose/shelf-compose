@@ -1,6 +1,7 @@
 # The shared gateway from intisy-compose/workflows gateway/, vendored byte for byte. A stack extends
 # both services and adds only its own values: container names, TAILNET_HOST, TS_HOSTNAME, the
-# gateway's 127.0.0.1 ports, and the named volumes gateway-caddy-data and tailscale-socket.
+# gateway's 127.0.0.1 ports, the named volumes gateway-caddy-data and tailscale-socket, and
+# TAILNET_PROXY_PROTOCOL on the gateway when its serve.json sends 443 a PROXY protocol header.
 services:
   # Owns the network namespace and publishes the local ports, on loopback only, so the local
   # addresses keep working while tailscale restarts or cannot join.
