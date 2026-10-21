@@ -4,19 +4,38 @@ $ProveProject = "shelf-compose"
 $ProveBackupContainer = "shelf-db-backup"
 $ProveDatabaseContainer = "shelf-db"
 $ProveKeyFile = Join-Path $PSScriptRoot "..\data\secrets\pgsodium_root.key"
+$ProveUncomparedTables = @("pgboss.job")
 
 <#
 .SYNOPSIS
 Table-by-table differences between two row-count maps, as printable lines; empty when they match.
+.NOTES
+Tables in Uncompared are skipped; they are printed by Write-UncomparedCounts instead.
 #>
-function Compare-TableCounts([System.Collections.IDictionary]$Before, [System.Collections.IDictionary]$After) {
+function Compare-TableCounts([System.Collections.IDictionary]$Before, [System.Collections.IDictionary]$After, [string[]]$Uncompared = @()) {
     $differences = @()
     foreach ($name in (@($Before.Keys) + @($After.Keys) | Sort-Object -Unique)) {
+        if ($name -in $Uncompared) { continue }
         $beforeCount = if ($Before.Contains($name)) { $Before[$name] } else { "missing" }
         $afterCount = if ($After.Contains($name)) { $After[$name] } else { "missing" }
         if ("$beforeCount" -ne "$afterCount") { $differences += "$name before=$beforeCount after=$afterCount" }
     }
     return $differences
+}
+
+<#
+.SYNOPSIS
+Prints the counts of the tables the comparison skips.
+.NOTES
+pgboss.job is pg-boss's job queue, which its housekeeping prunes and refills on every start, so a
+restore legitimately ends with different rows than the dump held.
+#>
+function Write-UncomparedCounts([System.Collections.IDictionary]$Before, [System.Collections.IDictionary]$After) {
+    foreach ($name in $ProveUncomparedTables) {
+        $beforeCount = if ($Before.Contains($name)) { $Before[$name] } else { "missing" }
+        $afterCount = if ($After.Contains($name)) { $After[$name] } else { "missing" }
+        Write-Host "  $name (not compared) before=$beforeCount after=$afterCount" -ForegroundColor Gray
+    }
 }
 
 function Get-ShelfTableCounts {
@@ -101,7 +120,8 @@ function Invoke-ProveData {
         $after = Get-ShelfTableCounts
     }
     catch { Write-RecoveryHint $newest.Name; throw }
-    $differences = Compare-TableCounts $before $after
+    Write-UncomparedCounts $before $after
+    $differences = Compare-TableCounts $before $after $ProveUncomparedTables
     if ($differences) {
         $differences | ForEach-Object { Write-Host "  DIFFERS $_" -ForegroundColor Red }
         Write-RecoveryHint $newest.Name
