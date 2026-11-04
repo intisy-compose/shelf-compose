@@ -13,6 +13,7 @@ services:
       TAILNET_HOST: ${TAILNET_HOST:-tailnet.invalid}
     volumes:
       - ./gateway.sh:/etc/caddy/gateway.sh:ro
+      - ./namespace-address.sh:/etc/caddy/namespace-address.sh:ro
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./sites.caddy:/etc/caddy/sites.caddy:ro
       - tailscale-socket:/var/run/tailscale

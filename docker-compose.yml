@@ -9,6 +9,10 @@ x-volume-roles:
   gateway-caddy-data: rebuilt
   tailscale-socket: rebuilt
 
+x-namespace-listeners:
+  shelf:
+    "8080": gateway
+
 services:
   # shelf shares this namespace. It answers 502 until auth, storage and shelf are up, and starts
   # without them so `up` can join the tailnet before they need the ts.net name.
@@ -41,6 +45,9 @@ services:
     container_name: shelf-server
     restart: unless-stopped
     network_mode: "service:gateway"
+    entrypoint: ["/bin/sh", "-c", "HOST=$$(sh /namespace-address.sh --single) && export HOST && exec ./docker-entrypoint.sh"]
+    volumes:
+      - ./gateway/namespace-address.sh:/namespace-address.sh:ro
     depends_on:
       gateway:
         condition: service_started
