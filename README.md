@@ -29,7 +29,7 @@ Every image is pinned to a version, and the migrations come from the same releas
 Requires [Docker](https://docs.docker.com/get-docker/) with the compose plugin, a Tailscale account
 with [HTTPS certificates](https://tailscale.com/kb/1153/enabling-https) enabled, and one of the two
 CLIs: `docker-compose.ps1` on Windows (PowerShell 5.1, built in), or `docker-compose.sh` on Linux
-(bash 4 or newer, git and `python3`).
+(bash 4.3 or newer, git and `python3`).
 
 ```powershell
 git clone --recursive https://github.com/intisy-compose/shelf-compose
