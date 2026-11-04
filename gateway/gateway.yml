@@ -8,9 +8,11 @@ services:
   gateway:
     image: caddy:2.11.4-alpine
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/etc/caddy/gateway.sh"]
     environment:
       TAILNET_HOST: ${TAILNET_HOST:-tailnet.invalid}
     volumes:
+      - ./gateway.sh:/etc/caddy/gateway.sh:ro
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./sites.caddy:/etc/caddy/sites.caddy:ro
       - tailscale-socket:/var/run/tailscale

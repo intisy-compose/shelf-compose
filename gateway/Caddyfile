@@ -4,10 +4,13 @@
 # TAILNET_PROXY_PROTOCOL=require makes :443 read the caller's tailnet address from a PROXY protocol
 # header, for a stack whose serve.json forwards 443 with "ProxyProtocol": 2; the default skip leaves
 # every connection untouched, so a header a caller sends itself is never believed.
+# A tailnet site listens on 127.0.0.1 only, where serve.json forwards it; every other site on the
+# Docker network addresses gateway.sh finds, never on 127.0.0.1, which tailscale reaches too.
 {
 	admin off
 	auto_https disable_redirects
-	servers :443 {
+	default_bind {$GATEWAY_LOCAL_ADDRESSES}
+	servers 127.0.0.1:443 {
 		listener_wrappers {
 			proxy_protocol {
 				fallback_policy {$TAILNET_PROXY_PROTOCOL:skip}
@@ -18,6 +21,7 @@
 }
 
 (tailnet) {
+	bind 127.0.0.1
 	tls {
 		get_certificate tailscale
 	}
