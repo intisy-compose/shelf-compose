@@ -231,6 +231,16 @@ assert_restore_services_running() {
     fail "Cannot restore: $(join_by ', ' "${missing[@]}") not running. Run ./docker-compose.sh up first, or ./docker-compose.sh up --fresh and then restore."
 }
 
+# assert_named_dump_restorable NAME: exits 1 before anything is stopped unless data/backups holds NAME
+# and it passes the same probe as the newest dump does. `pg_restore --clean` drops every table first,
+# so a dump with no table data would empty the live database.
+assert_named_dump_restorable() {
+    local name=$1 reason
+    [ -f "$backups_folder/$name" ] || fail "No dump named $name in data/backups; nothing was stopped."
+    reason=$(get_dump_rejection "$backups_folder/$name") || fail "$reason"
+    [ -z "$reason" ] || fail "$name cannot be restored: $reason; nothing was stopped."
+}
+
 # invoke_restore [FILE]: restores FILE, or the newest restorable dump, into the running database.
 invoke_restore() {
     local file=${1:-} name reason last_rejection="" restore_exit=0
@@ -246,6 +256,8 @@ invoke_restore() {
         [ -n "$file" ] || [ -z "$last_rejection" ] ||
             fail "No dump in data/backups can be restored; the last one checked, $last_rejection."
         [ -n "$file" ] || fail "No backups in data/backups."
+    else
+        assert_named_dump_restorable "${file##*/}"
     fi
     file=${file##*/}
     step "Restoring $file (shelf, auth and storage are stopped meanwhile)..."

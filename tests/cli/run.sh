@@ -593,11 +593,45 @@ check "says so" said "pg_restore reported errors (exit 3); check the output abov
 check "no up after" not_called "^compose up -d$"
 finish
 
-begin "restore of a named file uses its name only"
+begin "restore of a named file probes it, then restores it by its name only"
+add_dump shelf-20261003-000000.dump
 set_state running db db-backup
 run_cli restore data/backups/shelf-20261003-000000.dump
 check "exits 0" status_is 0
+check "probes it first" called_before "pg_restore --list /backups/shelf-20261003-000000.dump$" "^compose stop shelf gateway auth storage$"
 check "restores that file" called "--clean --if-exists /backups/shelf-20261003-000000.dump$"
+check "says it restored" said "Restored shelf-20261003-000000.dump."
+finish
+
+begin "restore of a named file that is not in data/backups stops nothing"
+add_dump shelf-20261001-000000.dump
+set_state running db db-backup
+run_cli restore shelf-2026100-000000.dump
+check "exits 1" status_is 1
+check "says so" said "No dump named shelf-2026100-000000.dump in data/backups; nothing was stopped."
+check "stops nothing" not_called "^compose stop"
+check "restores nothing" not_called "pg_restore -h db"
+finish
+
+begin "restore of a named dump without table data stops nothing"
+add_dump shelf-20261001-000000.dump
+set_state no-table-data shelf-20261001-000000.dump
+set_state running db db-backup
+run_cli restore shelf-20261001-000000.dump
+check "exits 1" status_is 1
+check "names the reason" said "shelf-20261001-000000.dump cannot be restored: it holds no table data; nothing was stopped."
+check "stops nothing" not_called "^compose stop"
+check "restores nothing" not_called "pg_restore -h db"
+finish
+
+begin "restore of a named dump docker cannot probe stops nothing"
+add_dump shelf-20261001-000000.dump
+set_state probe-fails shelf-20261001-000000.dump
+set_state running db db-backup
+run_cli restore shelf-20261001-000000.dump
+check "exits 1" status_is 1
+check "names the docker exit" said "docker could not run pg_restore --list on shelf-20261001-000000.dump (exit 125)"
+check "stops nothing" not_called "^compose stop"
 finish
 
 begin "restore without any dump says so"
