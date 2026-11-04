@@ -40,14 +40,33 @@ function Test-DatabaseVolumeIsEmpty([string]$Volume) {
 .SYNOPSIS
 Every complete dump in a folder, newest first.
 .NOTES
-Dumps are named with a sortable timestamp, so name order is age order. A zero-byte file or a
-.tmp is an interrupted dump and is never returned.
+Only names of the form <app>-YYYYMMDD-HHMMSS.dump are supported: their name order, ignoring case,
+is their age order. A zero-byte file or a .tmp is an interrupted dump and is never returned; a
+symlink counts with the size of its target. A folder that exists but cannot be listed throws, so no
+caller takes it for an empty one, whatever the caller's ErrorActionPreference.
 #>
 function Get-CompleteDumps([string]$Folder, [string]$Pattern) {
     if (-not (Test-Path -LiteralPath $Folder)) { return @() }
-    return @(Get-ChildItem -LiteralPath $Folder -Filter $Pattern -File |
-        Where-Object { $_.Length -gt 0 -and $_.Extension -ne ".tmp" } |
+    try { $files = @(Get-ChildItem -LiteralPath $Folder -Filter $Pattern -File -ErrorAction Stop) }
+    catch { throw "Cannot list ${Folder}: $($_.Exception.Message)" }
+    return @($files |
+        Where-Object { $_.Extension -ne ".tmp" -and (Test-DumpHasBytes $_) } |
         Sort-Object Name -Descending)
+}
+
+<#
+.SYNOPSIS
+True when a file, or the file a symlink points to, is not empty.
+.NOTES
+FileInfo.Length of a symlink is the link's own size, 0, so a symlink is opened to read its target's.
+#>
+function Test-DumpHasBytes([System.IO.FileInfo]$File) {
+    if (-not ($File.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $File.Length -gt 0 }
+    try {
+        $stream = [System.IO.File]::OpenRead($File.FullName)
+        try { return $stream.Length -gt 0 } finally { $stream.Dispose() }
+    }
+    catch { return $false }
 }
 
 <#
@@ -88,16 +107,22 @@ function Get-TableRowCounts([string]$Container, [string]$DatabaseHost, [string]$
 .SYNOPSIS
 What `up` does with the database volume: Keep it, Restore Dump into it, start it Fresh, or Refuse.
 .NOTES
-Refuse answers an empty volume next to complete dumps that GetRejection all rejects: an empty
-database started there would be dumped hourly and rotate those dumps out within BACKUP_KEEP hours.
+Refuse answers an empty volume next to complete dumps that GetRejection all rejects, or next to a
+folder that cannot be listed (rejected under the folder's own name): an empty database started there
+would be dumped hourly and rotate those dumps out within BACKUP_KEEP hours.
 GetRejection returns why a dump cannot be restored, or nothing when it can. AllowFresh starts an
 empty database instead of restoring, but never touches a volume that holds one.
 #>
 function Get-RestoreDecision([string]$Volume, [string]$Folder, [string]$Pattern, [scriptblock]$GetRejection = $null, [bool]$AllowFresh = $false) {
     if (-not (Test-DatabaseVolumeIsEmpty $Volume)) { return New-RestoreDecision "Keep" }
     if ($AllowFresh) { return New-RestoreDecision "Fresh" }
+    try { $dumps = Get-CompleteDumps $Folder $Pattern }
+    catch {
+        Write-Warning $_.Exception.Message
+        return New-RestoreDecision "Refuse" $null @([pscustomobject]@{ Name = $Folder; Reason = "it cannot be listed" })
+    }
     $rejected = @()
-    foreach ($dump in (Get-CompleteDumps $Folder $Pattern)) {
+    foreach ($dump in $dumps) {
         $reason = if ($GetRejection) { "$(& $GetRejection $dump)" } else { "" }
         if (-not $reason) { return New-RestoreDecision "Restore" $dump $rejected }
         $rejected += [pscustomobject]@{ Name = $dump.Name; Reason = $reason }
