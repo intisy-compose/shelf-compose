@@ -84,4 +84,23 @@ Describe "Assert-DatabaseKey" {
             (Get-FileHash $keyPath).Hash | Should Be $before
         }
     }
+
+    foreach ($content in @("0123456789abcdef", (("ab" * 32) + "`n"))) {
+        It "refuses a key file that is not exactly 64 hex characters ($($content.Length) bytes) and leaves it" {
+            $keyPath = Join-Path $keyFolder "pgsodium_root.key"
+            [System.IO.File]::WriteAllText($keyPath, $content)
+            { Assert-DatabaseKey $keyPath $emptyVolume } | Should Throw "is not a 64-character hex key (it holds $($content.Length) bytes)"
+            [System.IO.File]::ReadAllText($keyPath) | Should Be $content
+        }
+    }
+
+    It "leaves no key and no temporary file when the key cannot be written, and the next run writes a whole one" {
+        $keyPath = Join-Path $keyFolder "secrets\pgsodium_root.key"
+        New-Item -ItemType Directory -Force "$keyPath.tmp" | Out-Null
+        { Assert-DatabaseKey $keyPath $emptyVolume } | Should Throw "could not be written"
+        Test-Path -LiteralPath $keyPath | Should Be $false
+        Test-Path -LiteralPath "$keyPath.tmp" | Should Be $false
+        Assert-DatabaseKey $keyPath $emptyVolume
+        [System.IO.File]::ReadAllText($keyPath) | Should Match '^[0-9a-f]{64}$'
+    }
 }

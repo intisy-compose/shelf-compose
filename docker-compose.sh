@@ -116,7 +116,7 @@ EOF
 
 init_config() {
     local name jwt_secret generated=() names=()
-    [ -f "$config_file" ] || cp "$example_file" "$config_file"
+    [ -f "$config_file" ] || (umask 077 && cp "$example_file" "$config_file")
     for name in "${secret_names[@]}"; do
         [ -n "$(config_value "$name")" ] || generated+=("$name=$(new_secret)")
     done
@@ -144,7 +144,7 @@ generated_value() {
 }
 
 # set_config_values NAME=VALUE...: rewrites each line that sets one of the names, keeping every other
-# line, and writes the file back with LF endings.
+# line, and writes the file back with LF endings, in place, so it keeps its mode.
 set_config_values() {
     local pair line key output=""
     local -A values=()
@@ -233,14 +233,18 @@ assert_restore_services_running() {
 
 # invoke_restore [FILE]: restores FILE, or the newest restorable dump, into the running database.
 invoke_restore() {
-    local file=${1:-} name restore_exit=0
+    local file=${1:-} name reason last_rejection="" restore_exit=0
     [[ $file != -* ]] || usage
     assert_restore_services_running
     if [ -z "$file" ]; then
         while IFS= read -r name; do
             [ -n "$name" ] || continue
-            if test_dump_is_restorable "$backups_folder/$name"; then file=$name; break; fi
+            reason=$(get_dump_rejection "$backups_folder/$name") || fail "$reason"
+            if [ -z "$reason" ]; then file=$name; break; fi
+            last_rejection="$name: $reason"
         done < <(complete_dumps "$backups_folder" "$dump_pattern" || true)
+        [ -n "$file" ] || [ -z "$last_rejection" ] ||
+            fail "No dump in data/backups can be restored; the last one checked, $last_rejection."
         [ -n "$file" ] || fail "No backups in data/backups."
     fi
     file=${file##*/}
@@ -265,16 +269,29 @@ get_backup_image() {
 # get_dump_rejection PATH: why the dump cannot be restored, or nothing when pg_restore can list it and
 # it holds table data. It runs in a throwaway container of the stack's own postgres client image with
 # the dump's folder mounted read-only, so it works while the stack is down. An empty database dumps
-# to a valid file with no table data.
+# to a valid file with no table data. When docker itself could not run the probe (125, 126, 127: the
+# image missing offline, the daemon failing), nothing is known about the dump, so it prints why and
+# fails instead of rejecting it, which would let an older dump be restored in its place.
 get_dump_rejection() {
     local path=$1 image listing list_exit=0
-    image=$(get_backup_image) || { echo "no image found for the db-backup service"; return; }
+    image=$(get_backup_image) || { echo "no image found for the db-backup service"; return 1; }
     listing=$(docker run --rm -v "${path%/*}:/backups:ro" "$image" pg_restore --list "/backups/${path##*/}" 2>/dev/null) || list_exit=$?
-    if [ "$list_exit" -ne 0 ]; then echo "pg_restore cannot list it (exit $list_exit)"; return; fi
+    if is_docker_run_failure "$list_exit"; then
+        echo "docker could not run pg_restore --list on ${path##*/} (exit $list_exit): check that Docker runs and has or can pull $image"
+        return 1
+    fi
+    if [ "$list_exit" -ne 0 ]; then echo "pg_restore cannot list it (exit $list_exit)"; return 0; fi
     grep -q "TABLE DATA" <<<"$listing" || echo "it holds no table data"
 }
 
-test_dump_is_restorable() { [ -z "$(get_dump_rejection "$1")" ]; }
+is_docker_run_failure() { [ "$1" -eq 125 ] || [ "$1" -eq 126 ] || [ "$1" -eq 127 ]; }
+
+# test_dump_is_restorable PATH: true when the dump can be restored; exits 1 when docker cannot tell.
+test_dump_is_restorable() {
+    local reason
+    reason=$(get_dump_rejection "$1") || fail "$reason"
+    [ -z "$reason" ]
+}
 
 format_dump_age() {
     local age=$(($(date +%s) - $1))
@@ -287,7 +304,8 @@ format_dump_age() {
 # exits 1 before anything starts when the answer is Refuse.
 confirm_restore_decision() {
     local verb=$1 line
-    restore_decision_lines=$(restore_decision "$database_volume" "$backups_folder" "$dump_pattern" get_dump_rejection "$fresh")
+    restore_decision_lines=$(restore_decision "$database_volume" "$backups_folder" "$dump_pattern" get_dump_rejection "$fresh") ||
+        fail "Nothing was started, because a dump in data/backups could not be checked; run ./docker-compose.sh $verb again once Docker can run the check."
     case "$(decision_value action)" in
         Refuse)
             while IFS= read -r line; do err "$line"; done < <(format_restore_refusal "$restore_decision_lines" "$database_volume" "data/backups" "$verb")
@@ -423,7 +441,7 @@ invoke_data() {
 }
 
 cd "$here"
-command=$(printf '%s' "${1:-up}" | tr '[:upper:]' '[:lower:]')
+command=$(printf '%s' "${1-up}" | tr '[:upper:]' '[:lower:]')
 [ $# -eq 0 ] || shift
 case "$command" in
     init-config) no_options "$@"; init_config ;;

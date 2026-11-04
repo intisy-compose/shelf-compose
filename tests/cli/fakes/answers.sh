@@ -4,6 +4,7 @@
 # by the test that needs it and read here with a default:
 #   volume           missing | empty | cluster | unreachable (default empty): shelf-compose_shelf-db
 #   unlistable       dump names, or globs, pg_restore --list fails on (exit 1)
+#   probe-fails      dump names, or globs, whose probe docker itself cannot run (exit probe-exit, default 125)
 #   no-table-data    dump names whose listing holds no TABLE DATA line
 #   running          services `compose ps --status running --services` names
 #   containers       container names `docker ps -q --filter name=^NAME$` finds
@@ -36,6 +37,10 @@ answer_volume_inspect() {
 answer_pg_restore_list() {
     local name=${!#}
     name=${name##*/}
+    if listed_in probe-fails "$name"; then
+        echo "Unable to find image 'supabase/postgres:17.6.1.136' locally" >&2
+        return "$(state_value probe-exit 125)"
+    fi
     listed_in unlistable "$name" && return 1
     listed_in no-table-data "$name" && { echo ";     Archive created at 2026-10-01"; return 0; }
     echo "4242; 0 16384 TABLE DATA public Asset postgres"

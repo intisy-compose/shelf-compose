@@ -119,6 +119,7 @@ invoke_prove_data() {
 
     step "Counting rows before ..."
     before=$(get_shelf_table_counts) || fail "the rows could not be counted; nothing was deleted"
+    [ "$(count_lines "$before")" -gt 0 ] || fail "no table was counted; nothing was deleted"
     note "  $(count_lines "$before") tables, dump $newest"
 
     step "Stopping the stack and deleting its volumes ..."
