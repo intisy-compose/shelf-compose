@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stands in for python3 only to record a catalog call; everything else runs the real one ($REAL_PYTHON3).
+set -uo pipefail
+if [[ ${1:-} == */scripts/catalog.py ]]; then
+    printf 'python3 catalog.py %s\n' "${*:2}" >>"${FAKE_DOCKER_DIR:?}/calls"
+    exit 0
+fi
+exec "${REAL_PYTHON3:?}" "$@"

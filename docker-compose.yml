@@ -1,5 +1,5 @@
 # shelf.nu asset management with a self-hosted Supabase (Postgres, Auth, Storage), reachable over
-# Tailscale and on this PC's 127.0.0.1:8444. Every image is pinned; start it through docker-compose.ps1, which passes
+# Tailscale and on this PC's 127.0.0.1:8444. Every image is pinned; start it through docker-compose.ps1 or .sh, which pass
 # --env-file config.env and fills in the tailnet URLs once the node has joined.
 name: shelf-compose
 
