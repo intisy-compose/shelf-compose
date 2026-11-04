@@ -19,6 +19,7 @@ case_name=""
 case_failed=false
 output=""
 status=0
+extra_path=""
 
 new_stack() {
     rm -rf "$stack" "$state"
@@ -41,6 +42,7 @@ begin() {
     case_name=$1
     case_failed=false
     output=""
+    extra_path=""
     new_stack
 }
 
@@ -55,7 +57,7 @@ finish() {
 
 # run_cli ARGUMENTS...: runs the scratch CLI with the fakes, keeping its output and exit code.
 run_cli() {
-    output=$(cd "$scratch" && PATH="$fakes:$PATH" FAKE_DOCKER_DIR="$state" FAKE_BACKUPS="$stack/data/backups" \
+    output=$(cd "$scratch" && PATH="${extra_path:+$extra_path:}$fakes:$PATH" FAKE_DOCKER_DIR="$state" FAKE_BACKUPS="$stack/data/backups" \
         bash "$stack/docker-compose.sh" "$@" 2>&1)
     status=$?
 }
@@ -145,6 +147,19 @@ check "prints the usage" said "Usage: ./docker-compose.sh ["
 check "calls no docker" not_called .
 finish
 
+begin "an empty command shows the usage instead of running up"
+run_cli ""
+check "exits 1" status_is 1
+check "prints the usage" said "Usage: ./docker-compose.sh ["
+check "calls no docker" not_called .
+finish
+
+begin "--fresh alone is not a command"
+run_cli --fresh
+check "exits 1" status_is 1
+check "calls no docker" not_called .
+finish
+
 begin "the PowerShell spelling -Fresh is an unknown option"
 run_cli up -Fresh
 check "exits 1" status_is 1
@@ -215,6 +230,21 @@ check "the example's comments stay" grep -qF "# How many hourly database dumps d
 check "ANON_KEY verifies against JWT_SECRET" jwt_is_valid "$(config_value_of ANON_KEY)" anon "$(config_value_of JWT_SECRET)"
 check "SERVICE_ROLE_KEY verifies against JWT_SECRET" jwt_is_valid "$(config_value_of SERVICE_ROLE_KEY)" service_role "$(config_value_of JWT_SECRET)"
 finish
+
+begin "config.env holds secrets, so it is created 0600 and stays 0600 when rewritten"
+if [ -n "${MSYSTEM:-}" ]; then
+    echo "skip $case_name: Git Bash on NTFS has no file modes"
+else
+    rm "$stack/config.env"
+    chmod 0644 "$stack/config.env.example"
+    run_cli init-config
+    check "created 0600" [ "$(stat -c %a "$stack/config.env")" = 600 ]
+    sed -i 's/^TS_AUTHKEY=.*/TS_AUTHKEY=tskey-test/' "$stack/config.env"
+    run_cli up
+    check "the tailnet rewrite happened" config_has SHELF_HOST=shelf.tail-test.ts.net
+    check "still 0600 after the rewrite" [ "$(stat -c %a "$stack/config.env")" = 600 ]
+    finish
+fi
 
 begin "init-config keeps existing values and fills only the empty ones"
 printf '%s\r\n' "# kept comment" TS_AUTHKEY=tskey-mine POSTGRES_PASSWORD=mine JWT_SECRET=myjwt ANON_KEY=myanon \
@@ -298,7 +328,70 @@ if [ -z "${MSYSTEM:-}" ]; then
 fi
 finish
 
+begin "key check: a failed key write leaves no key, and the next run writes a whole one"
+rm "$stack/data/secrets/pgsodium_root.key"
+mkdir -p "$scratch/failing-bin"
+printf '%s\n' '#!/bin/bash' 'printf " 01 23"' 'exit 1' >"$scratch/failing-bin/od"
+chmod +x "$scratch/failing-bin/od"
+extra_path="$scratch/failing-bin"
+run_cli up
+check "exits 1" status_is 1
+check "says the key could not be written" said "data/secrets/pgsodium_root.key could not be written"
+check "no key file left" [ ! -e "$stack/data/secrets/pgsodium_root.key" ]
+check "no temporary file left" [ ! -e "$stack/data/secrets/pgsodium_root.key.tmp" ]
+check "starts nothing" not_called "^compose up"
+extra_path=""
+run_cli up
+check "the next run exits 0" status_is 0
+check "and writes a whole key" grep -qxE '[0-9a-f]{64}' "$stack/data/secrets/pgsodium_root.key"
+finish
+
+begin "key check: a key file of the wrong length is refused, not used"
+printf '%s' 0123456789abcdef >"$stack/data/secrets/pgsodium_root.key"
+run_cli up
+check "exits 1" status_is 1
+check "says it is not a whole key" said "is not a 64-character hex key (it holds 16 bytes)"
+check "the file is left as it was" grep -qx 0123456789abcdef "$stack/data/secrets/pgsodium_root.key"
+check "starts nothing" not_called "^compose up"
+finish
+
+begin "key check: a key with a trailing newline is refused"
+printf '%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef >"$stack/data/secrets/pgsodium_root.key"
+run_cli up
+check "exits 1" status_is 1
+check "says it holds 65 bytes" said "(it holds 65 bytes)"
+finish
+
 ## The restore decision in up, restart, rebuild
+
+begin "a dump docker cannot probe stops up before anything starts, instead of restoring an older one"
+add_dump shelf-20261001-000000.dump 7200
+add_dump shelf-20261002-000000.dump 600
+set_state probe-fails shelf-20261002-000000.dump
+run_cli up
+check "exits 1" status_is 1
+check "names the dump and the docker exit" said "docker could not run pg_restore --list on shelf-20261002-000000.dump (exit 125)"
+check "says nothing was started" said "Nothing was started, because a dump in data/backups could not be checked"
+check "no compose up at all" not_called "^compose up"
+check "never restores the older dump" not_called "pg_restore -h db"
+finish
+
+begin "exit 126 and 127 of the probe stop up too, exit 1 is a bad dump"
+add_dump shelf-20261001-000000.dump 7200
+add_dump shelf-20261002-000000.dump 600
+set_state probe-fails shelf-20261002-000000.dump
+set_state probe-exit 127
+run_cli up
+check "127 stops" status_is 1
+set_state probe-exit 126
+run_cli up
+check "126 stops" status_is 1
+check "no compose up after either" not_called "^compose up"
+set_state probe-exit 1
+run_cli up
+check "1 skips that dump and restores the older" called "pg_restore -h db .*/backups/shelf-20261001-000000.dump$"
+check "and says why it skipped" said "skipping shelf-20261002-000000.dump: pg_restore cannot list it (exit 1)"
+finish
 
 begin "Refuse: every dump rejected prints each with its reason and starts nothing"
 add_dump shelf-20261001-000000.dump 7200
@@ -507,11 +600,35 @@ check "exits 0" status_is 0
 check "restores that file" called "--clean --if-exists /backups/shelf-20261003-000000.dump$"
 finish
 
-begin "restore without any restorable dump says so"
+begin "restore without any dump says so"
 set_state running db db-backup
 run_cli restore
 check "exits 1" status_is 1
 check "says so" said "No backups in data/backups."
+finish
+
+begin "restore with every dump rejected names the last reason"
+add_dump shelf-20261001-000000.dump 7200
+add_dump shelf-20261002-000000.dump 600
+set_state no-table-data 'shelf-*.dump'
+set_state running db db-backup
+run_cli restore
+check "exits 1" status_is 1
+check "names the last dump checked and why" said "No dump in data/backups can be restored; the last one checked, shelf-20261001-000000.dump: it holds no table data."
+check "does not claim there are none" not_said "No backups in data/backups."
+check "stops nothing" not_called "^compose stop"
+finish
+
+begin "restore stops when docker cannot probe a dump"
+add_dump shelf-20261001-000000.dump 7200
+add_dump shelf-20261002-000000.dump 600
+set_state probe-fails shelf-20261002-000000.dump
+set_state running db db-backup
+run_cli restore
+check "exits 1" status_is 1
+check "names the docker exit" said "docker could not run pg_restore --list on shelf-20261002-000000.dump (exit 125)"
+check "stops nothing" not_called "^compose stop"
+check "restores nothing" not_called "pg_restore -h db"
 finish
 
 begin "backup writes a .tmp, then renames it"
@@ -578,6 +695,26 @@ set_state no-table-data 'shelf-*.dump'
 run_cli prove-data
 check "exits 1" status_is 1
 check "says nothing was deleted" said "cannot be listed by pg_restore or holds no table data; nothing was deleted"
+check "no down" not_called "^compose down"
+check "nothing removed" not_called "^volume rm"
+finish
+
+begin "prove-data deletes nothing when docker cannot probe the newest dump"
+prove_ready
+set_state probe-fails 'shelf-*.dump'
+run_cli prove-data
+check "exits 1" status_is 1
+check "names the docker exit" said "(exit 125)"
+check "no down" not_called "^compose down"
+check "nothing removed" not_called "^volume rm"
+finish
+
+begin "prove-data deletes nothing when no table was counted"
+prove_ready
+set_state counts-1 ''
+run_cli prove-data
+check "exits 1" status_is 1
+check "says so" said "no table was counted; nothing was deleted"
 check "no down" not_called "^compose down"
 check "nothing removed" not_called "^volume rm"
 finish

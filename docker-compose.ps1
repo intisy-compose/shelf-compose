@@ -172,10 +172,17 @@ function Invoke-Restore([object[]]$RestoreArguments) {
     Assert-RestoreServicesRunning
     $file = if ($RestoreArguments) { "$($RestoreArguments[0])" } else { "" }
     if (-not $file) {
-        $latest = Get-CompleteDumps (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" |
-            Where-Object { Test-DumpIsRestorable $_ } | Select-Object -First 1
-        if (-not $latest) { Write-Err "No backups in data\backups."; exit 1 }
-        $file = $latest.Name
+        $lastRejection = ""
+        try {
+            foreach ($dump in Get-CompleteDumps (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump") {
+                $reason = Get-DumpRejection $dump
+                if (-not $reason) { $file = $dump.Name; break }
+                $lastRejection = "$($dump.Name): $reason"
+            }
+        }
+        catch { Write-Err $_.Exception.Message; exit 1 }
+        if (-not $file -and $lastRejection) { Write-Err "No dump in data\backups can be restored; the last one checked, $lastRejection."; exit 1 }
+        if (-not $file) { Write-Err "No backups in data\backups."; exit 1 }
     }
     $file = Split-Path $file -Leaf
     Write-Step "Restoring $file (shelf, auth and storage are stopped meanwhile)..."
@@ -205,12 +212,19 @@ Why the dump cannot be restored, or an empty string when pg_restore can list it 
 .NOTES
 Runs in a throwaway container of the stack's own postgres client image with data/backups mounted
 read-only, so it works while the stack is down. An empty database dumps to a valid file with no table data.
+When docker itself could not run the probe (125, 126, 127: the image missing offline, the daemon
+failing), nothing is known about the dump, so it throws instead of rejecting it, which would let an
+older dump be restored in its place.
 #>
 function Get-DumpRejection([System.IO.FileInfo]$Dump) {
+    $image = Get-BackupImage
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $listing = docker run --rm -v "$($Dump.DirectoryName):/backups:ro" (Get-BackupImage) pg_restore --list "/backups/$($Dump.Name)" 2>$null
+        $listing = docker run --rm -v "$($Dump.DirectoryName):/backups:ro" $image pg_restore --list "/backups/$($Dump.Name)" 2>$null
+        if ($LASTEXITCODE -in 125, 126, 127) {
+            throw "docker could not run pg_restore --list on $($Dump.Name) (exit $LASTEXITCODE): check that Docker runs and has or can pull $image"
+        }
         if ($LASTEXITCODE -ne 0) { return "pg_restore cannot list it (exit $LASTEXITCODE)" }
         if (-not ($listing | Where-Object { $_ -match "TABLE DATA" })) { return "it holds no table data" }
         return ""
@@ -234,7 +248,12 @@ function Format-DumpAge([datetime]$WrittenAt) {
 What to do with the database volume; exits 1 before anything starts when the answer is Refuse.
 #>
 function Confirm-RestoreDecision([string]$Verb) {
-    $decision = Get-RestoreDecision $databaseVolume (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" { param($dump) Get-DumpRejection $dump } $Fresh.IsPresent
+    try { $decision = Get-RestoreDecision $databaseVolume (Join-Path $PSScriptRoot "data\backups") "shelf-*.dump" { param($dump) Get-DumpRejection $dump } $Fresh.IsPresent }
+    catch {
+        Write-Err $_.Exception.Message
+        Write-Err "Nothing was started, because a dump in data\backups could not be checked; run .\docker-compose.ps1 $Verb again once Docker can run the check."
+        exit 1
+    }
     if ($decision.Action -eq "Refuse") {
         Format-RestoreRefusal $decision $databaseVolume "data\backups" $Verb | ForEach-Object { Write-Err $_ }
         exit 1

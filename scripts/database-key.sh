@@ -9,10 +9,15 @@
 # would silently replace the lost one, so this fails instead and leaves the file absent. That holds
 # for a deliberate `up --fresh` too: the dumps are still needed later. A new key is 64 lowercase hex
 # characters with no newline, readable by its owner only: the db container's entrypoint copies it as
-# root from the read-only bind.
+# root from the read-only bind. It is written beside the key and moved there only once whole, and a
+# key file of any other shape is refused, so a cut-short write never becomes the database's key.
 assert_database_key() {
     local key_path=$1 volume=$2 backups_folder=${3:-} dump_pattern=${4:-shelf-*.dump} dumps
-    [ -f "$key_path" ] && return 0
+    if [ -f "$key_path" ]; then
+        is_whole_database_key "$key_path" && return 0
+        echo "$key_path is not a 64-character hex key (it holds $(($(wc -c <"$key_path"))) bytes); a write may have been cut short. Put the original pgsodium_root.key there, or remove the file when the database volume is empty and there are no dumps."
+        return 1
+    fi
     if [ -d "$key_path" ]; then
         echo "$key_path is a folder, not the encryption key file. Docker creates that folder when it starts the database without the key; remove it and put the key file there (or remove it alone when the database volume is empty and there are no dumps)."
         return 1
@@ -31,6 +36,23 @@ assert_database_key() {
             return 1
         fi
     fi
-    mkdir -p "$(dirname "$key_path")"
-    (umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$key_path")
+    write_database_key "$key_path"
+}
+
+# is_whole_database_key PATH: the file holds exactly 64 hex characters and nothing else.
+is_whole_database_key() {
+    [ "$(($(wc -c <"$1")))" -eq 64 ] && grep -qxE '[0-9a-fA-F]{64}' "$1"
+}
+
+# write_database_key PATH: a new key at PATH, or nothing there and a message when it cannot be written.
+write_database_key() {
+    local key_path=$1 temporary="$1.tmp"
+    if mkdir -p "$(dirname "$key_path")" &&
+        (set -o pipefail; umask 077 && head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$temporary") &&
+        is_whole_database_key "$temporary" && mv "$temporary" "$key_path"; then
+        return 0
+    fi
+    rm -f "$temporary"
+    echo "The encryption key $key_path could not be written; nothing was started."
+    return 1
 }

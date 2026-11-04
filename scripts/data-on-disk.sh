@@ -81,11 +81,13 @@ table_row_counts() {
 # a folder that cannot be listed (rejected under the folder's own path): an empty database started
 # there would be dumped hourly and rotate those dumps out within BACKUP_KEEP hours.
 # REJECT_FUNCTION is called with a dump's path and prints why it cannot be restored, or nothing when
-# it can; its exit code is ignored and its lines join with spaces, as the ps1's "$(...)" does.
+# it can; its lines join with spaces, as the ps1's "$(...)" does. A non-zero exit means it could not
+# judge the dump (the ps1's callback throws): the decision stops there, prints the callback's output
+# on stderr and fails, so a probe that never ran cannot pass an older dump for the newest.
 # ALLOW_FRESH=true starts an empty database instead of restoring, but never touches a volume that holds one.
 restore_decision() {
     local volume=$1 folder=$2 pattern=$3 reject_function=${4:-} allow_fresh=${5:-false}
-    local name reason listing rejected=()
+    local name reason reason_exit listing rejected=()
     if ! database_volume_is_empty "$volume"; then new_restore_decision Keep ""; return 0; fi
     if [ "$allow_fresh" = true ]; then new_restore_decision Fresh ""; return 0; fi
     if ! listing=$(complete_dumps "$folder" "$pattern"); then
@@ -95,8 +97,13 @@ restore_decision() {
     while IFS= read -r name <&3; do
         [ -n "$name" ] || continue
         reason=""
-        if [ -n "$reject_function" ]; then reason=$("$reject_function" "$folder/$name" </dev/null) || true; fi
+        reason_exit=0
+        if [ -n "$reject_function" ]; then reason=$("$reject_function" "$folder/$name" </dev/null) || reason_exit=$?; fi
         reason=${reason//$'\n'/ }
+        if [ "$reason_exit" -ne 0 ]; then
+            echo "${reason:-$reject_function failed with exit code $reason_exit} ($name)" >&2
+            return 1
+        fi
         if [ -z "$reason" ]; then
             new_restore_decision Restore "$name" ${rejected[@]+"${rejected[@]}"}
             return 0

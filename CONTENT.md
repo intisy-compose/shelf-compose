@@ -46,6 +46,8 @@ On Linux the same steps are:
 Both CLIs have the same commands and messages and work on the same `config.env` and `data/`, so a
 stack started by one can be stopped by the other. The sh spells options in long form: `-Fresh` is
 `--fresh`. Every `.\docker-compose.ps1 <command>` below is `./docker-compose.sh <command>` on Linux.
+An option is not a command: `./docker-compose.sh --fresh` alone prints the usage and does not run
+`up` (where `.\docker-compose.ps1 -Fresh` does); write `./docker-compose.sh up --fresh`.
 
 `up` joins the tailnet first, reads the node's real `ts.net` name and writes `SERVER_URL` and
 `SUPABASE_URL` into `config.env` before starting the rest, then prints them. Open the shelf URL on
