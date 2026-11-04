@@ -168,6 +168,20 @@ function Assert-RestoreServicesRunning {
     exit 1
 }
 
+<#
+.SYNOPSIS
+Exits 1 before anything is stopped unless data\backups holds the named dump and it passes the same probe as the newest dump does.
+.NOTES
+pg_restore --clean drops every table first, so a dump with no table data would empty the live database.
+#>
+function Assert-NamedDumpRestorable([string]$Name) {
+    $path = Join-Path $PSScriptRoot "data\backups\$Name"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Write-Err "No dump named $Name in data\backups; nothing was stopped."; exit 1 }
+    try { $reason = Get-DumpRejection (Get-Item -LiteralPath $path) }
+    catch { Write-Err $_.Exception.Message; exit 1 }
+    if ($reason) { Write-Err "$Name cannot be restored: $reason; nothing was stopped."; exit 1 }
+}
+
 function Invoke-Restore([object[]]$RestoreArguments) {
     Assert-RestoreServicesRunning
     $file = if ($RestoreArguments) { "$($RestoreArguments[0])" } else { "" }
@@ -184,6 +198,7 @@ function Invoke-Restore([object[]]$RestoreArguments) {
         if (-not $file -and $lastRejection) { Write-Err "No dump in data\backups can be restored; the last one checked, $lastRejection."; exit 1 }
         if (-not $file) { Write-Err "No backups in data\backups."; exit 1 }
     }
+    else { Assert-NamedDumpRestorable (Split-Path $file -Leaf) }
     $file = Split-Path $file -Leaf
     Write-Step "Restoring $file (shelf, auth and storage are stopped meanwhile)..."
     docker compose @composeArgs stop shelf gateway auth storage
