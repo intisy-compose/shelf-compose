@@ -690,6 +690,24 @@ run_cli data bogus
 check "an unknown subcommand shows the usage" status_is 1
 finish
 
+begin "data use keeps the user of an scp-style URL and splits the ref at the last @"
+run_cli data use git@github.com:someone/shelf-data.git@winter
+check "exits 0" status_is 0
+check "keeps git@" called "^git -C .* config submodule.data.url git@github.com:someone/shelf-data.git$"
+check "fetches the ref" called "^git -C .*/data fetch -q origin winter$"
+run_cli data use https://me@git.example.org/someone/shelf-data.git@v3
+check "a URL's user too" called "^git -C .* config submodule.data.url https://me@git.example.org/someone/shelf-data.git$"
+check "and its ref" called "^git -C .*/data fetch -q origin v3$"
+finish
+
+begin "data use refuses a ref that is empty or an option"
+for source in someone/shelf-data@-oops someone/shelf-data@ git@github.com:someone/x.git@--upload-pack=x; do
+    run_cli data use "$source"
+    check "'$source' exits 1" status_is 1
+    check "'$source' says why" said "A data ref must not be empty or start with '-'"
+done
+finish
+
 begin "catalog runs python3 scripts/catalog.py with its arguments"
 run_cli catalog sync --prune
 check "exits 0" status_is 0
