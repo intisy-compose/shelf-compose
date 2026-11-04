@@ -381,6 +381,30 @@ function Invoke-Backup {
     Write-OK "Backed up to data\backups\$file."
 }
 
+# Split-DataSource: the URL and ref of owner/repo[@ref] or a git URL[@ref]. The ref follows the last
+# @ after a URL's user@, so git@host:owner/repo@ref keeps its user.
+function Split-DataSource([string]$Source) {
+    $user = ""
+    $rest = $Source
+    if ($Source -cmatch '^([A-Za-z][A-Za-z0-9+.-]*://[^/@]+@)(.*)$' -or $Source -cmatch '^([^/@:]+@)([^/:]+:.*)$') {
+        $user = $Matches[1]
+        $rest = $Matches[2]
+    }
+    $ref = "main"
+    $at = $rest.LastIndexOf("@")
+    if ($at -ge 0) {
+        $ref = $rest.Substring($at + 1)
+        $rest = $rest.Substring(0, $at)
+    }
+    if ($ref -eq "" -or $ref.StartsWith("-")) {
+        Write-Host "A data ref must not be empty or start with '-': '$ref'" -ForegroundColor Red
+        exit 1
+    }
+    $url = "$user$rest"
+    if ($url -notmatch "://" -and -not $user) { $url = "https://github.com/$url.git" }
+    return @{ Url = $url; Ref = $ref }
+}
+
 function Invoke-Data([object[]]$DataArguments) {
     $subcommand = if ($DataArguments) { "$($DataArguments[0])".ToLower() } else { "status" }
     switch ($subcommand) {
@@ -388,9 +412,9 @@ function Invoke-Data([object[]]$DataArguments) {
         "use" {
             $source = if ($DataArguments.Count -ge 2) { "$($DataArguments[1])" } else { "" }
             if ($source) {
-                $parts = $source.Split("@", 2)
-                $url = if ($parts[0] -match "://|^git@") { $parts[0] } else { "https://github.com/$($parts[0]).git" }
-                $ref = if ($parts.Count -eq 2) { $parts[1] } else { "main" }
+                $resolved = Split-DataSource $source
+                $url = $resolved.Url
+                $ref = $resolved.Ref
             } else {
                 $url = git -C $PSScriptRoot config -f .gitmodules submodule.data.url
                 $ref = "main"
