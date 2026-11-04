@@ -22,9 +22,10 @@ Every image is pinned to a version, and the migrations come from the same releas
 
 ## Quick start
 
-Requires [Docker](https://docs.docker.com/get-docker/), PowerShell (built into Windows; `pwsh`
-elsewhere) and a Tailscale account with
-[HTTPS certificates](https://tailscale.com/kb/1153/enabling-https) enabled.
+Requires [Docker](https://docs.docker.com/get-docker/) with the compose plugin, a Tailscale account
+with [HTTPS certificates](https://tailscale.com/kb/1153/enabling-https) enabled, and one of the two
+CLIs: `docker-compose.ps1` on Windows (PowerShell 5.1, built in), or `docker-compose.sh` on Linux
+(bash 4 or newer, git and `python3`).
 
 ```powershell
 git clone --recursive https://github.com/intisy-compose/shelf-compose
@@ -32,8 +33,19 @@ cd shelf-compose
 
 .\docker-compose.ps1 init-config   # creates config.env and generates every secret and key
 # put an auth key from https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY in config.env
-.\docker-compose.ps1 up            # the one CLI; `.\docker-compose.ps1 help` lists every command
+.\docker-compose.ps1 up            # `.\docker-compose.ps1 help` lists every command
 ```
+
+On Linux the same steps are:
+
+```sh
+./docker-compose.sh init-config
+./docker-compose.sh up             # `./docker-compose.sh help` lists every command
+```
+
+Both CLIs have the same commands and messages and work on the same `config.env` and `data/`, so a
+stack started by one can be stopped by the other. The sh spells options in long form: `-Fresh` is
+`--fresh`. Every `.\docker-compose.ps1 <command>` below is `./docker-compose.sh <command>` on Linux.
 
 `up` joins the tailnet first, reads the node's real `ts.net` name and writes `SERVER_URL` and
 `SUPABASE_URL` into `config.env` before starting the rest, then prints them. Open the shelf URL on
@@ -108,6 +120,14 @@ fails on file permissions. `db-backup` dumps it every hour into `data/backups` a
 .\docker-compose.ps1 restore                          # the newest dump
 .\docker-compose.ps1 restore shelf-20260923-091920.dump
 ```
+
+`restore` needs `db` and `db-backup` running and starts shelf again only once `pg_restore`
+succeeded. When the volume is empty, `up`, `restart` and `rebuild` restore the newest dump that
+`pg_restore` can read before anything else starts, roll back on a failed restore, and refuse to
+start an empty database while dumps exist that none can be restored from; `up -Fresh` (`up --fresh`
+on Linux) starts empty on purpose. The database's encryption key is `data/secrets/pgsodium_root.key`:
+`up` writes a new one only while there is neither a database nor a dump it would fail to decrypt.
+`prove-data` (destructive) dumps, deletes every volume, starts again and compares every table.
 
 `data/` is its own git repo (a submodule), defaulting to the public
 [`shelf-data-template`](https://github.com/intisy-compose/shelf-data-template). Point it at your

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stands in for git: appends each call to $FAKE_DOCKER_DIR/calls as "git ...", and answers rev-parse.
+set -uo pipefail
+printf 'git %s\n' "$*" >>"${FAKE_DOCKER_DIR:?}/calls"
+case " $* " in
+    *" rev-parse "*) echo 0abc123 ;;
+    *" config -f .gitmodules "*) echo https://github.com/intisy-compose/shelf-data-template.git ;;
+esac
+exit 0
