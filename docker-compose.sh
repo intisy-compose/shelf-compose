@@ -19,6 +19,8 @@ if [ -n "${MSYSTEM:-}" ]; then here=$(cd "$here" && pwd -W); export MSYS_NO_PATH
 . "$here/scripts/data-on-disk.sh"
 # shellcheck source=scripts/prove-data.sh
 . "$here/scripts/prove-data.sh"
+# shellcheck source=gateway/tailnet-node.sh
+. "$here/gateway/tailnet-node.sh"
 # shellcheck source=scripts/database-key.sh
 . "$here/scripts/database-key.sh"
 
@@ -39,10 +41,11 @@ fail() { err "$*"; exit 1; }
 
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [backup|catalog|data|down|init-config|logs|prove-data|rebuild|restart|restore|status|up|url]
+Usage: ./docker-compose.sh [backup|catalog|data|delete|down|init-config|logs|prove-data|rebuild|restart|restore|status|up|url]
   backup       Dump the database to data/backups now
   catalog      check | sync [--prune] | add <file> | update <file> | list | images | cutout <photo> <png>  (see CATALOG.md in data/)
   data         status | use [owner/repo[@ref]]  point data/ at a data repo (none = template)
+  delete       Down, then remove the stack's node from the tailnet (with TS_API_TOKEN) and data/tailscale; for a stack being removed
   down         Stop and remove the containers (the database volume and data/ stay)
   init-config  Create config.env and generate every missing secret and key
   logs         [service]  follow logs, e.g. logs shelf
@@ -476,6 +479,18 @@ invoke_data() {
     esac
 }
 
+# invoke_delete: how the stack is deleted: down, then its node leaves the tailnet and data/tailscale
+# goes, so a later up joins fresh. Removing the folder afterwards is the human's step.
+invoke_delete() {
+    local node_name
+    step "Stopping everything..."
+    "${compose[@]}" down || fail "docker compose down failed, so the node stays in the tailnet."
+    node_name=$(config_value SHELF_HOST)
+    [ -n "$node_name" ] || node_name=$(config_value TS_HOSTNAME)
+    remove_tailnet_identity "$here/data/tailscale" "${node_name:-shelf}" "$config_file" || exit 1
+    ok "Deleted. The volumes stay in Docker; remove this folder to finish."
+}
+
 cd "$here"
 command=$(printf '%s' "${1-up}" | tr '[:upper:]' '[:lower:]')
 [ $# -eq 0 ] || shift
@@ -483,6 +498,7 @@ case "$command" in
     init-config) no_options "$@"; init_config ;;
     up)          read_options "$@"; invoke_up ;;
     down)        no_options "$@"; step "Stopping everything..."; "${compose[@]}" down ;;
+    delete)      no_options "$@"; invoke_delete ;;
     restart)     read_options "$@"; invoke_recreate restart ;;
     rebuild)     read_options "$@"; invoke_recreate rebuild ;;
     url)         no_options "$@"; show_urls ;;

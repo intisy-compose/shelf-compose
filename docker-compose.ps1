@@ -11,6 +11,7 @@ Remove-Item Env:\COMPOSE_PROJECT_NAME -ErrorAction SilentlyContinue
 
 . (Join-Path $PSScriptRoot "scripts\data-on-disk.ps1")
 . (Join-Path $PSScriptRoot "scripts\prove-data.ps1")
+. (Join-Path $PSScriptRoot "gateway\tailnet-node.ps1")
 . (Join-Path $PSScriptRoot "scripts\database-key.ps1")
 
 $configFile  = Join-Path $PSScriptRoot "config.env"
@@ -432,11 +433,27 @@ function Invoke-Data([object[]]$DataArguments) {
     }
 }
 
+<#
+.SYNOPSIS
+How the stack is deleted: down, then its node leaves the tailnet and data\tailscale goes, so a later up
+joins fresh. Removing the folder afterwards is the human's step.
+#>
+function Invoke-Delete {
+    Write-Step "Stopping everything..."
+    docker compose @composeArgs down
+    if ($LASTEXITCODE -ne 0) { Write-Err "docker compose down failed, so the node stays in the tailnet."; exit 1 }
+    $config = Read-Config
+    $nodeName = if ($config["SHELF_HOST"]) { $config["SHELF_HOST"] } elseif ($config["TS_HOSTNAME"]) { $config["TS_HOSTNAME"] } else { "shelf" }
+    if (-not (Remove-TailnetIdentity (Join-Path $PSScriptRoot "data\tailscale") $nodeName $configFile)) { exit 1 }
+    Write-OK "Deleted. The volumes stay in Docker; remove this folder to finish."
+}
+
 $usage = @{
     "init-config" = "Create config.env and generate every missing secret and key"
     "up"          = "[-Fresh]  join the tailnet, restore an empty database from data\backups, start the stack (default); -Fresh starts it empty instead"
     "url"         = "Print the tailnet URLs"
     "down"        = "Stop and remove the containers (the database volume and data/ stay)"
+    "delete"      = "Down, then remove the stack's node from the tailnet (with TS_API_TOKEN) and data\tailscale; for a stack being removed"
     "restart"     = "[-Fresh]  recreate the stack, restoring an empty database as up does"
     "rebuild"     = "[-Fresh]  rebuild the built images (shelf, migrate) and recreate the stack, restoring as up does"
     "status"      = "Show the containers and their health"
@@ -454,6 +471,7 @@ switch ($Command.ToLower()) {
     "init-config" { Initialize-Config; break }
     "up"      { Invoke-Up; break }
     "down"    { Write-Step "Stopping everything..."; docker compose @composeArgs down; break }
+    "delete"  { Invoke-Delete; break }
     "restart" { Invoke-Recreate "restart"; break }
     "rebuild" { Invoke-Recreate "rebuild"; break }
     "url"     { Show-Urls; break }
