@@ -61,6 +61,21 @@ http://localhost:8025, because nothing is sent to real inboxes until you configu
 The auth key is only used for the first join; the node identity is kept in `data/tailscale`
 afterwards, so an expired key does not matter once the node is in.
 
+## Deleting the stack
+
+`down` keeps the node in the tailnet, so the next `up` comes back under the same name. To remove the
+stack for good, run `.\docker-compose.ps1 delete`, then remove the folder. `delete` runs `down`, removes
+the node from the tailnet, and removes `data/tailscale`, so a later `up` joins fresh. It finds the
+node by the stable node ID in `data/tailscale/tailscaled.state`, never by its name, so another device
+named `shelf` stays.
+
+The removal goes through the Tailscale API with `TS_API_TOKEN` from `config.env`: an access token
+from [Settings, Keys](https://login.tailscale.com/admin/settings/keys) of an account that may remove
+devices (Owner, Admin or IT admin). Without one, `delete` prints the node's name and ID to remove on
+the [Machines page](https://login.tailscale.com/admin/machines) instead. When the API refuses or
+does not answer, `data/tailscale` stays and `delete` can run again. The volumes stay in Docker until
+`docker volume rm` removes them; the data they held is in `data/`.
+
 ## Configuration
 
 `config.env` (gitignored) holds everything; `config.env.example` documents each value.
