@@ -23,9 +23,10 @@ extra_path=""
 
 new_stack() {
     rm -rf "$stack" "$state"
-    mkdir -p "$stack/scripts" "$stack/data/backups" "$stack/data/secrets" "$state"
+    mkdir -p "$stack/scripts" "$stack/gateway" "$stack/data/backups" "$stack/data/secrets" "$state"
     cp "$repository/docker-compose.sh" "$repository/docker-compose.yml" "$repository/config.env.example" "$stack/"
     cp "$repository"/scripts/*.sh "$stack/scripts/"
+    cp "$repository/gateway/tailnet-node.sh" "$stack/gateway/"
     chmod +x "$stack/docker-compose.sh"
     : >"$state/calls"
     printf '%s' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef >"$stack/data/secrets/pgsodium_root.key"
@@ -804,6 +805,101 @@ check "exits 1" status_is 1
 check "says none was found" said "no volume labelled com.docker.compose.project=shelf-compose was found"
 check "nothing removed" not_called "^volume rm"
 check "the recovery hint" said "Recover with: ./docker-compose.sh up"
+finish
+
+## delete
+
+api_token=tskey-api-k123-SECRET456
+
+# delete_ready: a joined node, nOURS123CNTRL, in a tailnet that also has another node of the same
+# name, and a TS_API_TOKEN in config.env.
+delete_ready() {
+    local current profiles
+    mkdir -p "$stack/data/tailscale"
+    current=$(printf 'profile-ab12' | base64 | tr -d '\n')
+    profiles=$(printf '{"ab12":{"ID":"ab12","Key":"profile-ab12","NodeID":"nOURS123CNTRL"}}' | base64 | tr -d '\n')
+    printf '{"_current-profile":"%s","_profiles":"%s"}\n' "$current" "$profiles" >"$stack/data/tailscale/tailscaled.state"
+    set_state tailnet-devices "nOURS123CNTRL shelf" "nOTHER45CNTRL shelf"
+    sed -i 's/^SHELF_HOST=.*/SHELF_HOST=shelf.tail-test.ts.net/' "$stack/config.env"
+    echo "TS_API_TOKEN=$api_token" >>"$stack/config.env"
+}
+
+device_left() { grep -q "^$1 " "$state/tailnet-devices"; }
+
+begin "delete runs down, removes the node by its ID, then data/tailscale"
+delete_ready
+run_cli delete
+check "exits 0" status_is 0
+check "down first" called "^compose down$"
+check "the API call after down" called_before "^compose down$" "^curl https://api.tailscale.com/"
+check "removes our node by its ID" called "^curl https://api.tailscale.com/api/v2/device/nOURS123CNTRL Authorization: Bearer $api_token$"
+check "our node is gone" bash -c '! grep -q "^nOURS123CNTRL " "$1"' _ "$state/tailnet-devices"
+check "says so, by the ts.net name" said "Removed shelf.tail-test.ts.net from the tailnet."
+check "data/tailscale is gone" [ ! -e "$stack/data/tailscale" ]
+check "says it is deleted" said "Deleted. The volumes stay in Docker; remove this folder to finish."
+finish
+
+begin "delete leaves a node of the same name alone"
+delete_ready
+run_cli delete
+check "the other shelf stays" device_left nOTHER45CNTRL
+check "one API call" call_count_is "^curl https://api.tailscale.com/" 1
+finish
+
+begin "delete never puts the token on a command line or in its output"
+delete_ready
+run_cli delete
+check "no credential on argv" not_called "CREDENTIAL ON ARGV"
+check "the fake would catch one" bash -c 'FAKE_DOCKER_DIR="$1" "$2/curl" -H "Authorization: Bearer x" https://api.tailscale.com/api/v2/device/n1 </dev/null >/dev/null; [ $? -eq 99 ]' _ "$state" "$fakes"
+check "the token is not in the output" not_said "$api_token"
+finish
+
+begin "delete without TS_API_TOKEN prints the manual step"
+delete_ready
+sed -i '/^TS_API_TOKEN=/d' "$stack/config.env"
+run_cli delete
+check "exits 0" status_is 0
+check "no API call" not_called "^curl "
+check "says the node stays" said "No TS_API_TOKEN in config.env, so shelf.tail-test.ts.net stays in the tailnet."
+check "names the Machines page and the node" said "Remove shelf.tail-test.ts.net (node ID nOURS123CNTRL) on the Machines page: https://login.tailscale.com/admin/machines"
+check "data/tailscale is gone" [ ! -e "$stack/data/tailscale" ]
+finish
+
+begin "delete names TS_HOSTNAME when up never wrote the ts.net name"
+delete_ready
+sed -i -e 's/^SHELF_HOST=.*/SHELF_HOST=/' -e '/^TS_API_TOKEN=/d' "$stack/config.env"
+run_cli delete
+check "names TS_HOSTNAME" said "Remove shelf (node ID nOURS123CNTRL) on the Machines page"
+finish
+
+begin "an API error removes nothing locally and says so"
+delete_ready
+set_state tailnet-status 500
+run_cli delete
+check "exits 1" status_is 1
+check "names the status" said "The Tailscale API answered HTTP 500, so shelf.tail-test.ts.net was not removed."
+check "data/tailscale is kept" [ -f "$stack/data/tailscale/tailscaled.state" ]
+check "says it is kept" said "is kept, so delete can run again."
+check "never says deleted" not_said "Deleted."
+finish
+
+begin "a failed down calls no API and keeps data/tailscale"
+delete_ready
+set_state down-exit 1
+run_cli delete
+check "exits 1" status_is 1
+check "says so" said "docker compose down failed, so the node stays in the tailnet."
+check "no API call" not_called "^curl "
+check "data/tailscale is kept" [ -f "$stack/data/tailscale/tailscaled.state" ]
+finish
+
+begin "delete leaves config.env as it was, 0600 included"
+delete_ready
+cp "$stack/config.env" "$scratch/before.env"
+chmod 0600 "$stack/config.env"
+run_cli delete
+check "unchanged" cmp -s "$scratch/before.env" "$stack/config.env"
+if [ -z "${MSYSTEM:-}" ]; then check "still 0600" [ "$(stat -c %a "$stack/config.env")" = 600 ]; fi
 finish
 
 echo

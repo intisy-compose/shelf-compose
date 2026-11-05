@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stands in for curl on the Tailscale API: appends "curl URL" and the Authorization header it was given
+# on stdin to $FAKE_DOCKER_DIR/calls, and answers from the fake's state:
+#   tailnet-devices  the API's devices, "NODE_ID NAME" per line: a DELETE of one in it answers 200 and
+#                    removes it, of any other 404
+#   tailnet-status   present: every call answers this status instead (000 as a refused connection)
+# A credential on the command line, where every user of the host can read it, exits 99 instead.
+set -uo pipefail
+state=${FAKE_DOCKER_DIR:?}
+for argument in "$@"; do
+    case "$argument" in
+        *Authorization* | *Bearer* | *tskey-*)
+            printf 'curl CREDENTIAL ON ARGV %s\n' "$argument" >>"$state/calls"
+            exit 99 ;;
+    esac
+done
+url=${!#}
+header=$(sed -n 's/^header = "\(.*\)"$/\1/p')
+printf 'curl %s %s\n' "$url" "$header" >>"$state/calls"
+
+case "$url" in
+    https://api.tailscale.com/api/v2/device/*)
+        node=${url##*/}
+        if [ -e "$state/tailnet-status" ]; then
+            status=$(cat "$state/tailnet-status")
+            printf '%s' "$status"
+            [ "$status" != 000 ] || exit 7
+        elif grep -q "^$node " "$state/tailnet-devices" 2>/dev/null; then
+            grep -v "^$node " "$state/tailnet-devices" >"$state/tailnet-devices.next"
+            mv "$state/tailnet-devices.next" "$state/tailnet-devices"
+            printf 200
+        else
+            printf 404
+        fi ;;
+    *) printf '000'; exit 7 ;;
+esac
